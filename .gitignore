@@ -1,0 +1,6 @@
+node_modules/
+dist/
+# 2009scape cache (Jagex assets) and everything exported from it
+vendor/
+public/world/
+public/player/
