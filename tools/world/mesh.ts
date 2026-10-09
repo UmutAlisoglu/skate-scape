@@ -1,5 +1,7 @@
-// Turns a TileGrid into flat-colored triangle soups (terrain + locs), following the client's scene build.
-import { packHsl, hslToRgb } from '../../src/shared/color.ts';
+// Turns a TileGrid into shaded triangle soups (terrain + locs), following the HD client's scene build:
+// per-vertex colors (lightness scaled the way GlModel / GlTile do), smooth normals, texture coordinates
+// and the ground shadow map objects cast on the tiles around them.
+import { packHsl, hslToRgb, hdFaceColor, greyRgb, scaleLightness, HD_BRIGHTNESS } from '../../src/shared/color.ts';
 import type { Defs, LocType } from '../cache/defs.ts';
 import { ARCHIVE } from '../cache/defs.ts';
 import type { CacheStore } from '../cache/store.ts';
@@ -7,18 +9,45 @@ import { Model } from '../cache/model.ts';
 import type { TileGrid, LocSpawn } from './region.ts';
 import { retainTree, isTree } from './tree-policy.ts';
 
-/** Growable triangle soup: positions in RS fine units (x east, y down, z north) + one RGBA per triangle. */
-export class Soup {
-  pos: number[] = [];
-  col: number[] = [];
-  textures: number[] = [];
-  get triangleCount() {
-    return this.col.length / 4;
+class Grow<T extends Float32Array | Int32Array | Uint8Array> {
+  length = 0;
+  constructor(private make: (n: number) => T, public data: T = make(1 << 16)) {}
+  push(...values: number[]) {
+    if (this.length + values.length > this.data.length) {
+      const next = this.make(Math.max(this.data.length * 2, this.length + values.length));
+      next.set(this.data);
+      this.data = next;
+    }
+    for (let i = 0; i < values.length; i++) this.data[this.length++] = values[i];
   }
-  tri(ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number, rgb: number, a = 255, texture = -1) {
-    this.pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-    this.col.push((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff, a);
-    this.textures.push(texture + 1);
+  view() {
+    return this.data.subarray(0, this.length) as T;
+  }
+}
+
+/**
+ * Growable triangle soup in RS axes (x east, y down, z north; fine units, 128 = 1 tile).
+ * Per corner: position, color (0xRRGGBB before lighting), normal, texture coordinate. Per face: alpha, texture.
+ */
+export class Soup {
+  pos = new Grow((n) => new Float32Array(n));
+  rgb = new Grow((n) => new Int32Array(n));
+  normal = new Grow((n) => new Float32Array(n));
+  uv = new Grow((n) => new Float32Array(n));
+  alpha = new Grow((n) => new Uint8Array(n));
+  textures = new Grow((n) => new Int32Array(n));
+  get triangleCount() {
+    return this.alpha.length;
+  }
+  /** p: 9 coords, rgb: 3 colors, n: 9 normal components, uv: 6 (or null), alpha 0-255 opaque, texture id or -1 */
+  tri(p: ArrayLike<number>, rgb: ArrayLike<number>, n: ArrayLike<number>, uv: ArrayLike<number> | null, alpha = 255, texture = -1) {
+    this.pos.push(...Array.from(p));
+    this.rgb.push(rgb[0], rgb[1], rgb[2]);
+    this.normal.push(...Array.from(n));
+    if (uv) this.uv.push(uv[0], uv[1], uv[2], uv[3], uv[4], uv[5]);
+    else this.uv.push(0, 0, 0, 0, 0, 0);
+    this.alpha.push(alpha);
+    this.textures.push(texture);
   }
 }
 
@@ -27,61 +56,98 @@ const VERTEX_INDICES = [[1, 3, 5, 7], [1, 3, 5, 7], [1, 3, 5, 7], [1, 3, 5, 7, 6
 const TRIANGLE_INDICES = [[0, 1, 2, 3, 0, 0, 1, 3], [1, 1, 2, 3, 1, 0, 1, 3], [0, 1, 2, 3, 1, 0, 1, 3], [0, 0, 1, 2, 0, 0, 2, 4, 1, 0, 4, 3], [0, 0, 1, 4, 0, 0, 4, 3, 1, 1, 2, 4], [0, 0, 4, 3, 1, 0, 1, 2, 1, 0, 2, 4], [0, 1, 2, 4, 1, 0, 1, 4, 1, 0, 4, 3], [0, 4, 1, 2, 0, 4, 2, 5, 1, 0, 4, 5, 1, 0, 5, 3], [0, 4, 1, 2, 0, 4, 2, 3, 0, 4, 3, 5, 1, 0, 4, 5], [0, 0, 4, 5, 1, 4, 1, 2, 1, 4, 2, 3, 1, 4, 3, 5], [0, 0, 1, 5, 0, 1, 4, 5, 0, 1, 2, 4, 1, 0, 5, 3, 1, 5, 4, 3, 1, 4, 2, 3], [1, 0, 1, 5, 1, 1, 4, 5, 1, 1, 2, 4, 0, 0, 5, 3, 0, 5, 4, 3, 0, 4, 2, 3], [1, 0, 5, 4, 1, 0, 1, 5, 0, 0, 4, 3, 0, 4, 5, 3, 0, 5, 2, 3, 0, 1, 2, 5]];
 
 const BLEND = 5;
+/** HD tile lightness before shadows (SceneGraph: 74 - shadow). */
+const TILE_LIGHTNESS = 74;
 
-export function buildTerrain(grid: TileGrid, defs: Defs): Soup {
+/** Ground shadow map per plane at tile corners ((width + 1) x (height + 1)), filled by LocBuilder. */
+export function emptyShadows(grid: TileGrid) {
+  return [0, 1, 2, 3].map(() => new Uint8Array((grid.width + 1) * (grid.height + 1)));
+}
+
+export function buildTerrain(grid: TileGrid, defs: Defs, shadows: Uint8Array[] = emptyShadows(grid)): Soup {
   const soup = new Soup();
   const W = grid.width;
   const H = grid.height;
+  const W1 = W + 1;
   for (let plane = 0; plane < 4; plane++) {
     const underlays = grid.underlays[plane];
     const overlays = grid.overlays[plane];
     const blended = blendUnderlays(grid, plane, defs);
+    const shadow = shadows[plane];
+    const s = (x: number, y: number) => (x < 0 || y < 0 || x > W || y > H ? 0 : shadow[x + y * W1]);
+    // corner lightness: 74 minus the weighted shadow around the corner
+    const light = new Int32Array(W1 * (H + 1));
+    for (let x = 0; x <= W; x++)
+      for (let y = 0; y <= H; y++)
+        light[x + y * W1] = TILE_LIGHTNESS - ((s(x + 1, y) >> 3) + (s(x - 1, y) >> 2) + (s(x, y - 1) >> 2) + (s(x, y + 1) >> 3) + (s(x, y) >> 1));
+    // corner colors: the touching underlay tiles' blended colors, averaged, at the corner's lightness
+    const cornerRgb = (cx: number, cy: number) => {
+      let r = 0, g = 0, b = 0, n = 0;
+      for (const [tx, ty] of [[cx - 1, cy - 1], [cx, cy - 1], [cx - 1, cy], [cx, cy]]) {
+        if (tx < 0 || ty < 0 || tx >= W || ty >= H) continue;
+        const hsl = blended[grid.ti(tx, ty)];
+        if (underlays[grid.ti(tx, ty)] === 0 || hsl < 0) continue;
+        const rgb = hslToRgb(scaleLightness(hsl, light[cx + cy * W1]), HD_BRIGHTNESS);
+        r += rgb >> 16; g += (rgb >> 8) & 0xff; b += rgb & 0xff; n++;
+      }
+      return n ? ((Math.round(r / n) << 16) | (Math.round(g / n) << 8) | Math.round(b / n)) : -1;
+    };
+    const heightNormal = (cx: number, cy: number): [number, number, number] => {
+      // RS axes: y down. Gradient of the corner heightmap, normal points up (-y).
+      const dx = grid.h(plane, cx + 1, cy) - grid.h(plane, cx - 1, cy);
+      const dz = grid.h(plane, cx, cy + 1) - grid.h(plane, cx, cy - 1);
+      const l = Math.hypot(dx, 256, dz);
+      return [-dx / l, -256 / l, -dz / l];
+    };
+
     for (let x = 0; x < W; x++) {
       for (let y = 0; y < H; y++) {
         const t = grid.ti(x, y);
         const u = underlays[t];
         const o = overlays[t];
         if (u === 0 && o === 0) continue;
-        const hSW = grid.h(plane, x, y);
-        const hSE = grid.h(plane, x + 1, y);
-        const hNE = grid.h(plane, x + 1, y + 1);
-        const hNW = grid.h(plane, x, y + 1);
-        const underRgb = u > 0 && blended[t] >= 0 ? hslToRgb(blended[t]) : -1;
+        const heights = [grid.h(plane, x, y), grid.h(plane, x + 1, y), grid.h(plane, x + 1, y + 1), grid.h(plane, x, y + 1)];
+        const corners = [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]] as const;
+        const lightness = corners.map(([cx, cy]) => light[cx + cy * W1]);
+        const normals = corners.map(([cx, cy]) => heightNormal(cx, cy));
+        const under = u > 0 && blended[t] >= 0 ? corners.map(([cx, cy]) => cornerRgb(cx, cy)) : null;
+        const flu = u > 0 ? defs.underlay(u - 1) : null;
+        const underTexture = flu && flu.texture >= 0 ? { id: flu.texture, scale: flu.textureScale || 128 } : null;
 
-        let overRgb = -1;
-        let overTexture = -1;
+        let over: number[] | null = null;
+        let overTexture: { id: number; scale: number } | null = null;
         if (o > 0) {
           const flo = defs.overlay(o - 1);
-          overTexture = flo.texture;
-          if (flo.texture >= 0) overRgb = hslToRgb(defs.textureColors[flo.texture]);
-          else if (flo.color >= 0) overRgb = hslToRgb(flo.color);
+          if (flo.texture >= 0) {
+            overTexture = { id: flo.texture, scale: flo.textureScale || 128 };
+            over = lightness.map((l) => greyRgb(l));
+          } else if (flo.color >= 0) over = lightness.map((l) => hslToRgb(scaleLightness(flo.color, l), HD_BRIGHTNESS));
         }
 
         const x0 = x * 128;
         const z0 = y * 128;
-        if (o === 0) {
-          if (underRgb < 0) continue;
-          quad(soup, x0, z0, hSW, hSE, hNE, hNW, underRgb);
-          continue;
-        }
-        const shape = grid.shapes[plane][t] + 1;
+        const shape = o === 0 ? 0 : grid.shapes[plane][t] + 1;
         const rot = grid.rotations[plane][t];
-        if (shape === 1) {
-          if (overRgb >= 0) quad(soup, x0, z0, hSW, hSE, hNE, hNW, overRgb, overTexture);
-          continue;
-        }
-        // shaped tile: part underlay, part overlay
-        const verts = VERTEX_INDICES[shape].map((code) => shapedVertex(code, rot, x0, z0, hSW, hSE, hNE, hNW));
-        const tris = TRIANGLE_INDICES[shape];
+        // Every tile goes through the shaped-tile path; shape 0/1 are the two-triangle plain tiles.
+        const codes = shape <= 1 ? [1, 3, 5, 7] : VERTEX_INDICES[shape];
+        const tris = shape === 0 ? [0, 0, 1, 2, 0, 0, 2, 3] : shape === 1 ? [1, 0, 1, 2, 1, 0, 2, 3] : TRIANGLE_INDICES[shape];
+        const verts = codes.map((code) => shapedVertex(code, shape <= 1 ? 0 : rot, x0, z0, heights));
         for (let i = 0; i < tris.length; i += 4) {
           const isOverlay = tris[i] === 1;
-          const rgb = isOverlay ? overRgb : underRgb;
-          if (rgb < 0) continue;
-          const [a, b, c] = [tris[i + 1], tris[i + 2], tris[i + 3]].map((v) => (v < 4 ? (v - rot) & 3 : v));
-          const A = verts[a];
-          const B = verts[b];
-          const C = verts[c];
-          soup.tri(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2], rgb, 255, isOverlay ? overTexture : -1);
+          const colors = isOverlay ? over : under;
+          if (!colors || colors.some((c) => c < 0)) continue;
+          const texture = isOverlay ? overTexture : underTexture;
+          const idx = [tris[i + 1], tris[i + 2], tris[i + 3]].map((v) => (shape > 1 && v < 4 ? (v - rot) & 3 : v));
+          const p: number[] = [], rgb: number[] = [], n: number[] = [], uv: number[] = [];
+          for (const k of idx) {
+            const v = verts[k];
+            p.push(v.x, v.y, v.z);
+            rgb.push(blendCorners(colors, v.wx, v.wz));
+            const nn = blendNormals(normals, v.wx, v.wz);
+            n.push(nn[0], nn[1], nn[2]);
+            if (texture) uv.push(v.x / texture.scale, v.z / texture.scale);
+          }
+          soup.tri(p, rgb, n, texture ? uv : null, 255, texture ? texture.id : -1);
         }
       }
     }
@@ -89,33 +155,52 @@ export function buildTerrain(grid: TileGrid, defs: Defs): Soup {
   return soup;
 }
 
-function quad(soup: Soup, x0: number, z0: number, sw: number, se: number, ne: number, nw: number, rgb: number, texture = -1) {
-  soup.tri(x0, sw, z0, x0 + 128, se, z0, x0 + 128, ne, z0 + 128, rgb, 255, texture);
-  soup.tri(x0, sw, z0, x0 + 128, ne, z0 + 128, x0, nw, z0 + 128, rgb, 255, texture);
-}
+interface TileVertex { x: number; y: number; z: number; /** 0-1 position within the tile */ wx: number; wz: number }
 
-function shapedVertex(code: number, rot: number, x0: number, z0: number, sw: number, se: number, ne: number, nw: number): [number, number, number] {
+function shapedVertex(code: number, rot: number, x0: number, z0: number, h: number[]): TileVertex {
   if ((code & 1) === 0 && code <= 8) code = ((code - rot - rot - 1) & 7) + 1;
   else if (code > 8 && code <= 12) code = ((code - rot - 9) & 3) + 9;
   else if (code > 12 && code <= 16) code = ((code - rot - 13) & 3) + 13;
+  const [sw, se, ne, nw] = h;
+  const at = (fx: number, fz: number, y: number): TileVertex => ({ x: x0 + fx * 128, y, z: z0 + fz * 128, wx: fx, wz: fz });
   switch (code) {
-    case 1: return [x0, sw, z0];
-    case 2: return [x0 + 64, (sw + se) >> 1, z0];
-    case 3: return [x0 + 128, se, z0];
-    case 4: return [x0 + 128, (se + ne) >> 1, z0 + 64];
-    case 5: return [x0 + 128, ne, z0 + 128];
-    case 6: return [x0 + 64, (ne + nw) >> 1, z0 + 128];
-    case 7: return [x0, nw, z0 + 128];
-    case 8: return [x0, (nw + sw) >> 1, z0 + 64];
-    case 9: return [x0 + 64, (sw + se) >> 1, z0 + 32];
-    case 10: return [x0 + 96, (se + ne) >> 1, z0 + 64];
-    case 11: return [x0 + 64, (ne + nw) >> 1, z0 + 96];
-    case 12: return [x0 + 32, (nw + sw) >> 1, z0 + 64];
-    case 13: return [x0 + 32, sw, z0 + 32];
-    case 14: return [x0 + 96, se, z0 + 32];
-    case 15: return [x0 + 96, ne, z0 + 96];
-    default: return [x0 + 32, nw, z0 + 96];
+    case 1: return at(0, 0, sw);
+    case 2: return at(0.5, 0, (sw + se) >> 1);
+    case 3: return at(1, 0, se);
+    case 4: return at(1, 0.5, (se + ne) >> 1);
+    case 5: return at(1, 1, ne);
+    case 6: return at(0.5, 1, (ne + nw) >> 1);
+    case 7: return at(0, 1, nw);
+    case 8: return at(0, 0.5, (nw + sw) >> 1);
+    case 9: return at(0.5, 0.25, (sw + se) >> 1);
+    case 10: return at(0.75, 0.5, (se + ne) >> 1);
+    case 11: return at(0.5, 0.75, (ne + nw) >> 1);
+    case 12: return at(0.25, 0.5, (nw + sw) >> 1);
+    case 13: return at(0.25, 0.25, sw);
+    case 14: return at(0.75, 0.25, se);
+    case 15: return at(0.75, 0.75, ne);
+    default: return at(0.25, 0.75, nw);
   }
+}
+
+/** Bilinear blend of four corner colors (SW, SE, NE, NW) at a point inside the tile. */
+function blendCorners(c: number[], fx: number, fz: number) {
+  const w = [(1 - fx) * (1 - fz), fx * (1 - fz), fx * fz, (1 - fx) * fz];
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < 4; i++) {
+    r += (c[i] >> 16) * w[i];
+    g += ((c[i] >> 8) & 0xff) * w[i];
+    b += (c[i] & 0xff) * w[i];
+  }
+  return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+}
+
+function blendNormals(n: [number, number, number][], fx: number, fz: number): [number, number, number] {
+  const w = [(1 - fx) * (1 - fz), fx * (1 - fz), fx * fz, (1 - fx) * fz];
+  const out: [number, number, number] = [0, 0, 0];
+  for (let i = 0; i < 4; i++) for (let k = 0; k < 3; k++) out[k] += n[i][k] * w[i];
+  const l = Math.hypot(...out) || 1;
+  return [out[0] / l, out[1] / l, out[2] / l];
 }
 
 /** Client underlay blending: average H/S/L over an 11x11 window, hue weighted by chroma. Returns HSL16 or -1. */
@@ -178,6 +263,8 @@ export class LocBuilder {
       } catch (e) {
         console.warn(`  model ${id} failed to decode: ${(e as Error).message}`);
       }
+      // 2009scape ships 42-byte black placeholder quads for some missing roof models; skip them.
+      if (m && m.vertexCount === 4 && m.triangleCount === 2 && m.colors[0] === 0 && m.colors[1] === 0 && !m.textures) m = null;
       this.modelCache.set(id, m);
     }
     return this.modelCache.get(id)!;
@@ -229,10 +316,17 @@ export class LocBuilder {
     return child !== undefined ? this.defs.loc(child) : loc;
   }
 
-  build(grid: TileGrid,treeDensity=1): { soup: Soup; placed: PlacedLoc[]; removedTrees: number; keptTrees: number } {
+  build(grid: TileGrid, treeDensity = 1): { soup: Soup; placed: PlacedLoc[]; shadows: Uint8Array[]; removedTrees: number; keptTrees: number } {
     const soup = new Soup();
     const placed: PlacedLoc[] = [];
-    let removedTrees=0,keptTrees=0;
+    const shadows = emptyShadows(grid);
+    const W1 = grid.width + 1;
+    const shade = (plane: number, x: number, y: number, value: number) => {
+      if (x < 0 || y < 0 || x > grid.width || y > grid.height) return;
+      const i = x + y * W1;
+      if (shadows[plane][i] < value) shadows[plane][i] = value;
+    };
+    let removedTrees = 0, keptTrees = 0;
     // walloff of the wall standing on each tile, used to push wall decorations out
     const wallOff = new Map<string, number>();
     for (const s of grid.locs) {
@@ -241,8 +335,8 @@ export class LocBuilder {
 
     for (const s of grid.locs) {
       const loc = this.resolve(s.id);
-      if(!retainTree(loc.name,s.id,grid.baseX+s.x,grid.baseY+s.y,treeDensity)){removedTrees++;continue;}
-      if(isTree(loc.name))keptTrees++;
+      if (!retainTree(loc.name, s.id, grid.baseX + s.x, grid.baseY + s.y, treeDensity)) { removedTrees++; continue; }
+      if (isTree(loc.name)) keptTrees++;
       const first = soup.triangleCount;
       const swapped = s.rot === 1 || s.rot === 3;
       const width = swapped ? loc.length : loc.width;
@@ -281,22 +375,39 @@ export class LocBuilder {
         add(((r + 2) & 3) + 4, 4);
       }
 
+      const ambient = loc.ambient + 64;
       for (const { model, dx, dy } of parts) {
         if (!model) continue;
-        const minY = model.vy.reduce((a, b) => Math.min(a, b), Infinity);
-        const maxY = model.vy.reduce((a, b) => Math.max(a, b), -Infinity);
-        const grass = loc.name === 'null' && t === 22 && loc.blockwalk !== 1 && maxY - minY > 12 && maxY - minY < 100;
-        emitModel(soup, model, this.defs, fineX + dx, avgY, fineY + dy, loc.hillskew !== 0 ? (vx, vz) => grid.heightAt(s.plane, vx, vz) - avgY : null, grass);
+        emitModel(soup, model, this.defs, fineX + dx, avgY, fineY + dy, loc.hillskew !== 0 ? (vx, vz) => grid.heightAt(s.plane, vx, vz) - avgY : null, ambient);
+      }
+
+      // Ground shadows, as SceneGraph.addLoc marks them.
+      if (loc.active && parts.some((p) => p.model)) {
+        if (t === 10 || t === 11) {
+          let radius = 0;
+          for (const { model } of parts) if (model) for (let v = 0; v < model.vertexCount; v++) radius = Math.max(radius, Math.hypot(model.vx[v], model.vz[v]));
+          const size = Math.min(30, Math.trunc(radius / 4)) || 15;
+          for (let sx = 0; sx <= width; sx++) for (let sy = 0; sy <= length; sy++) shade(s.plane, s.x + sx, s.y + sy, size);
+        } else if (t === 0) {
+          const corners = [[[0, 0], [0, 1]], [[0, 1], [1, 1]], [[1, 0], [1, 1]], [[0, 0], [1, 0]]][r];
+          for (const [cx, cy] of corners) shade(s.plane, s.x + cx, s.y + cy, 50);
+        } else if (t === 1 || t === 3) {
+          const [cx, cy] = [[0, 1], [1, 1], [1, 0], [0, 0]][r];
+          shade(s.plane, s.x + cx, s.y + cy, 50);
+        }
       }
       const triangleCount = soup.triangleCount - first;
       if (triangleCount > 0) placed.push({ ...s, name: loc.name, firstTriangle: first, triangleCount });
     }
-    return { soup, placed, removedTrees, keptTrees };
+    return { soup, placed, shadows, removedTrees, keptTrees };
   }
 }
 
-/** Appends a model's visible faces; skew(x, z) returns extra height for hill-skewed locs. */
-export function emitModel(soup: Soup, m: Model, defs: Defs, ox: number, oy: number, oz: number, skew: ((x: number, z: number) => number) | null, grass = false) {
+/**
+ * Appends a model's visible faces with HD vertex colors, smooth/flat normals and texture coordinates.
+ * skew(x, z) returns extra height for hill-skewed locs.
+ */
+export function emitModel(soup: Soup, m: Model, defs: Defs, ox: number, oy: number, oz: number, skew: ((x: number, z: number) => number) | null, ambient = 64) {
   const n = m.vertexCount;
   const X = new Float64Array(n);
   const Y = new Float64Array(n);
@@ -306,19 +417,30 @@ export function emitModel(soup: Soup, m: Model, defs: Defs, ox: number, oy: numb
     Z[v] = m.vz[v] + oz;
     Y[v] = m.vy[v] + oy + (skew ? skew(X[v], Z[v]) : 0);
   }
+  const vertexNormals = m.vertexNormals();
+  const uvs = m.textures ? m.uvs() : null;
+  const cfg = defs.textures;
   for (let t = 0; t < m.triangleCount; t++) {
     const type = m.info ? m.info[t] & 3 : 0;
     const alpha = m.alpha ? m.alpha[t] : 0;
-    if (type === 2 || alpha === 255) continue;
-    const tex = m.textures ? m.textures[t] : -1;
-    let rgb: number;
-    if (alpha === 254 || (type === 3 && tex < 0)) rgb = 0;
-    else if (tex >= 0) rgb = hslToRgb(defs.textureColors[tex] ?? 0);
-    else rgb = hslToRgb(m.colors[t]);
-    if (grass) rgb = hslToRgb(m.colors[t]);
-    const a = m.ta[t];
-    const b = m.tb[t];
-    const c = m.tc[t];
-    soup.tri(X[a], Y[a], Z[a], X[b], Y[b], Z[b], X[c], Y[c], Z[c], rgb, 255 - alpha, grass ? -1 : tex);
+    // The GL client never draws hidden (2) or black (3) faces, and alpha >= 254 is invisible.
+    if (type === 2 || type === 3 || alpha >= 254) continue;
+    let tex = m.textures ? m.textures[t] : -1;
+    if (tex >= cfg.count || (tex >= 0 && !cfg.defined[tex])) tex = -1;
+    const rgb = hdFaceColor(m.colors[t], ambient, tex >= 0 ? cfg.brightness[tex] : 0);
+    const a = m.ta[t], b = m.tb[t], c = m.tc[t];
+    let normals: number[];
+    if (type === 1) {
+      const f = m.faceNormal(t);
+      normals = [...f, ...f, ...f];
+    } else {
+      normals = [a, b, c].flatMap((v) => [vertexNormals[v * 3], vertexNormals[v * 3 + 1], vertexNormals[v * 3 + 2]]);
+      // A vertex only touched by flat faces has no smooth normal; use this face's.
+      if (normals.some((v) => Number.isNaN(v)) || [0, 3, 6].some((i) => normals[i] === 0 && normals[i + 1] === 0 && normals[i + 2] === 0)) {
+        const f = m.faceNormal(t);
+        normals = [...f, ...f, ...f];
+      }
+    }
+    soup.tri([X[a], Y[a], Z[a], X[b], Y[b], Z[b], X[c], Y[c], Z[c]], [rgb, rgb, rgb], normals, uvs && tex >= 0 ? uvs.subarray(t * 6, t * 6 + 6) : null, 255 - alpha, tex);
   }
 }

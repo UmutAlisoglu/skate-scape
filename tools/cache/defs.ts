@@ -15,6 +15,7 @@ export const ARCHIVE = {
 // ---- underlays (FluType) ----
 export interface FluType {
   rgb: number;
+  textureScale: number;
   hue: number; // weighted by chroma, as in the client
   saturation: number;
   lightness: number;
@@ -23,7 +24,7 @@ export interface FluType {
 }
 
 function decodeFlu(data: Uint8Array): FluType {
-  const t: FluType = { rgb: 0, hue: 0, saturation: 0, lightness: 0, chroma: 1, texture: -1 };
+  const t: FluType = { rgb: 0, textureScale: 128, hue: 0, saturation: 0, lightness: 0, chroma: 1, texture: -1 };
   const r = new Reader(data);
   for (;;) {
     const op = r.g1();
@@ -34,7 +35,7 @@ function decodeFlu(data: Uint8Array): FluType {
     } else if (op === 2) {
       t.texture = r.g2();
       if (t.texture === 65535) t.texture = -1;
-    } else if (op === 3) r.g2();
+    } else if (op === 3) t.textureScale = r.g2();
   }
   return t;
 }
@@ -66,11 +67,12 @@ export interface FloType {
   color: number; // packed HSL16, -1 = invisible
   secondaryColor: number;
   texture: number;
+  textureScale: number;
   occludeUnderlay: boolean;
 }
 
 function decodeFlo(data: Uint8Array): FloType {
-  const t: FloType = { color: 0, secondaryColor: -1, texture: -1, occludeUnderlay: true };
+  const t: FloType = { color: 0, secondaryColor: -1, texture: -1, textureScale: 128, occludeUnderlay: true };
   const r = new Reader(data);
   const color = (rgb: number) => (rgb === 0xff00ff ? -1 : rgbToHsl(rgb));
   for (;;) {
@@ -83,7 +85,7 @@ function decodeFlo(data: Uint8Array): FloType {
       if (t.texture === 65535) t.texture = -1;
     } else if (op === 5) t.occludeUnderlay = false;
     else if (op === 7) t.secondaryColor = color(r.g3());
-    else if (op === 9) r.g2();
+    else if (op === 9) t.textureScale = r.g2();
     else if (op === 11) r.g1();
     else if (op === 13) r.g3();
     else if (op === 14) r.g1();
@@ -102,6 +104,9 @@ export interface LocType {
   length: number;
   blockwalk: number;
   hillskew: number;
+  ambient: number;
+  /** false for locs that cast no ground shadow (opcode 64) */
+  active: boolean;
   walloff: number;
   mirror: boolean;
   resizeX: number;
@@ -120,7 +125,7 @@ export interface LocType {
 
 function decodeLoc(id: number, data: Uint8Array): LocType {
   const t: LocType = {
-    id, name: 'null', models: null, shapes: null, width: 1, length: 1, blockwalk: 2, hillskew: 0,
+    id, name: 'null', models: null, shapes: null, width: 1, length: 1, blockwalk: 2, hillskew: 0, ambient: 0, active: true,
     walloff: 16, mirror: false, resizeX: 128, resizeY: 128, resizeZ: 128, offX: 0, offY: 0, offZ: 0,
     recolS: null, recolD: null, retexS: null, retexD: null, ops: [null, null, null, null, null], multiLocs: null,
   };
@@ -158,7 +163,7 @@ function decodeLoc(id: number, data: Uint8Array): LocType {
     } else if (op === 24) r.g2();
     else if (op === 27) t.blockwalk = 1;
     else if (op === 28) t.walloff = r.g1();
-    else if (op === 29) r.g1();
+    else if (op === 29) t.ambient = r.g1b();
     else if (op === 39) r.g1();
     else if (op >= 30 && op < 35) {
       const s = r.gjstr();
@@ -186,7 +191,7 @@ function decodeLoc(id: number, data: Uint8Array): LocType {
     else if (op === 60) r.g2();
     else if (op === 62) t.mirror = true;
     else if (op === 64) {
-      // not active
+      t.active = false;
     } else if (op === 65) t.resizeX = r.g2();
     else if (op === 66) t.resizeY = r.g2();
     else if (op === 67) t.resizeZ = r.g2();
@@ -256,9 +261,11 @@ export class Defs {
   private flo = new Map<number, FloType>();
   private locs = new Map<number, LocType>();
   readonly textureColors: Uint16Array;
+  readonly textures: TextureConfig;
 
   constructor(private cache: CacheStore) {
-    this.textureColors = decodeTextureColors(cache.file(ARCHIVE.TEXTURE_CONFIG, 0, 0)!);
+    this.textures = decodeTextureConfig(cache.file(ARCHIVE.TEXTURE_CONFIG, 0, 0)!);
+    this.textureColors = this.textures.averageColor;
   }
 
   underlay(id: number) {
@@ -280,16 +287,37 @@ export class Defs {
   }
 }
 
-/** Average HSL16 color per texture id (archive 26), used where we don't render real textures yet. */
-function decodeTextureColors(data: Uint8Array): Uint16Array {
+export interface TextureConfig {
+  count: number;
+  defined: boolean[];
+  opaque: boolean[];
+  /** 0-255: how far textured faces are lifted toward white before the texture modulates them */
+  brightness: Uint8Array;
+  materialType: Int8Array;
+  /** HSL16 average color, used where a texture can't be drawn */
+  averageColor: Uint16Array;
+}
+
+/** Texture table from archive 26 (Js5GlTextureProvider): one column per property for every defined texture. */
+function decodeTextureConfig(data: Uint8Array): TextureConfig {
   const r = new Reader(data);
   const count = r.g2();
   const defined: boolean[] = [];
   for (let i = 0; i < count; i++) defined.push(r.g1() === 1);
-  const definedCount = defined.filter(Boolean).length;
-  // repeating, opaque, lowDetail, flipped, scroll, brightness, material, animation: one byte each per defined texture
-  r.pos += definedCount * 8;
-  const colors = new Uint16Array(count);
-  for (let i = 0; i < count; i++) if (defined[i]) colors[i] = r.g2();
-  return colors;
+  const column = () => {
+    const values = new Int16Array(count);
+    for (let i = 0; i < count; i++) if (defined[i]) values[i] = r.g1b();
+    return values;
+  };
+  column(); // repeating
+  const opaque = Array.from(column(), (v) => v === 1);
+  column(); // low detail
+  column(); // flipped
+  column(); // scroll speed
+  const brightness = Uint8Array.from(column(), (v) => v & 0xff);
+  const materialType = Int8Array.from(column());
+  column(); // animation type
+  const averageColor = new Uint16Array(count);
+  for (let i = 0; i < count; i++) if (defined[i]) averageColor[i] = r.g2();
+  return { count, defined, opaque, brightness, materialType, averageColor };
 }

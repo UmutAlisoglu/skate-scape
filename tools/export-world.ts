@@ -40,9 +40,10 @@ const grid = new TileGrid(area.regionX, area.regionY, area.w, area.h);
 grid.load(cache, xteas);
 console.log(`Loaded ${area.w}x${area.h} regions, ${grid.locs.length} loc spawns`);
 
-const terrain = buildTerrain(grid, defs);
-const treeDensity=process.argv.includes('--trees=full')?1:0.35;
-const { soup: locs, placed, removedTrees, keptTrees } = new LocBuilder(cache, defs).build(grid,treeDensity);
+const treeDensity = process.argv.includes('--trees=full') ? 1 : 0.35;
+// Objects first: they mark the ground shadow map the terrain colors use.
+const { soup: locs, placed, shadows, removedTrees, keptTrees } = new LocBuilder(cache, defs).build(grid, treeDensity);
+const terrain = buildTerrain(grid, defs, shadows);
 console.log(`Terrain: ${terrain.triangleCount} triangles, locs: ${locs.triangleCount} triangles (${placed.length} placed)`);
 console.log(`Tree cover: ${keptTrees} retained, ${removedTrees} removed (density ${treeDensity})`);
 
@@ -68,23 +69,44 @@ writeFileSync(
 console.log(`Wrote ${dir}`);
 
 /**
- * Binary layout: u32 triangleCount, i16 xyz * 3 per triangle, u8 rgba per triangle.
- * Positions are RS fine units (128 = 1 tile = 1 meter) already in three.js axes: x east, y up, z south.
+ * Writes three files per soup:
+ * - <name>.bin: u32 triangleCount, i16 xyz * 3 per triangle, u8 rgba per triangle (first corner's color + alpha).
+ *   Positions are RS fine units (128 = 1 tile = 1 meter) already in three.js axes: x east, y up, z south.
+ *   Collision and anything that only needs geometry reads this.
+ * - <name>.materials.bin: u16 per triangle, cache texture id + 1 (0 = untextured).
+ * - <name>.shade.bin: u32 triangleCount, f32 uv * 6, u8 rgb * 9 (per corner, before lighting), i8 normal * 9 (three axes).
  */
 function writeSoup(path: string, soup: Soup) {
   const n = soup.triangleCount;
+  const P = soup.pos.view(), RGB = soup.rgb.view(), N = soup.normal.view(), UV = soup.uv.view(), A = soup.alpha.view(), T = soup.textures.view();
   const posBytes = n * 9 * 2;
   const buf = Buffer.alloc(4 + posBytes + n * 4);
   buf.writeUInt32LE(n, 0);
   const pos = new Int16Array(buf.buffer, buf.byteOffset + 4, n * 9);
   for (let i = 0; i < n * 3; i++) {
-    pos[i * 3] = Math.round(soup.pos[i * 3]);
-    pos[i * 3 + 1] = Math.round(-soup.pos[i * 3 + 1]);
-    pos[i * 3 + 2] = Math.round(-soup.pos[i * 3 + 2]);
+    pos[i * 3] = Math.round(P[i * 3]);
+    pos[i * 3 + 1] = Math.round(-P[i * 3 + 1]);
+    pos[i * 3 + 2] = Math.round(-P[i * 3 + 2]);
   }
-  Buffer.from(soup.col).copy(buf, 4 + posBytes);
+  for (let t = 0; t < n; t++) {
+    const o = 4 + posBytes + t * 4, rgb = RGB[t * 3];
+    buf[o] = (rgb >> 16) & 0xff; buf[o + 1] = (rgb >> 8) & 0xff; buf[o + 2] = rgb & 0xff; buf[o + 3] = A[t];
+  }
   writeFileSync(path, buf);
   const surfaces = Buffer.alloc(n * 2);
-  for (let i = 0; i < n; i++) surfaces.writeUInt16LE(soup.textures[i], i * 2);
+  for (let i = 0; i < n; i++) surfaces.writeUInt16LE(T[i] + 1, i * 2);
   writeFileSync(path.replace('.bin', '.materials.bin'), surfaces);
+  const shade = Buffer.alloc(4 + n * 24 + n * 18);
+  shade.writeUInt32LE(n, 0);
+  new Float32Array(shade.buffer, shade.byteOffset + 4, n * 6).set(UV);
+  const rgbOut = new Uint8Array(shade.buffer, shade.byteOffset + 4 + n * 24, n * 9);
+  const normalOut = new Int8Array(shade.buffer, shade.byteOffset + 4 + n * 33, n * 9);
+  for (let i = 0; i < n * 3; i++) {
+    const rgb = RGB[i];
+    rgbOut[i * 3] = (rgb >> 16) & 0xff; rgbOut[i * 3 + 1] = (rgb >> 8) & 0xff; rgbOut[i * 3 + 2] = rgb & 0xff;
+    normalOut[i * 3] = Math.round(N[i * 3] * 127);
+    normalOut[i * 3 + 1] = Math.round(-N[i * 3 + 1] * 127);
+    normalOut[i * 3 + 2] = Math.round(-N[i * 3 + 2] * 127);
+  }
+  writeFileSync(path.replace('.bin', '.shade.bin'), shade);
 }

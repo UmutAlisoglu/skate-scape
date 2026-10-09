@@ -55,3 +55,37 @@ export function hslToRgb(hsl: number, brightness = 0.8): number {
   const to8 = (v: number) => Math.min(255, Math.max(0, Math.round(Math.pow(v, brightness) * 256)));
   return (to8(r) << 16) | (to8(g) << 8) | to8(b);
 }
+
+/** Palette exponent the HD (GL) client uses with high-detail lighting. */
+export const HD_BRIGHTNESS = 0.7;
+
+/** Client ColorUtils.multiplyLightness2: scales HSL lightness by factor/128, clamped to 2..126. */
+export function scaleLightness(hsl: number, factor: number): number {
+  let l = (factor * (hsl & 0x7f)) >> 7;
+  if (l < 2) l = 2;
+  else if (l > 126) l = 126;
+  return (hsl & 0xff80) + l;
+}
+
+/**
+ * Vertex color the HD client gives a model face before GL lighting (GlModel.packColorToRGBA):
+ * lightness scaled by the model's ambient, and textured faces lifted toward white by the texture's brightness.
+ */
+export function hdFaceColor(hsl: number, ambient: number, textureBrightness = 0): number {
+  let rgb = hslToRgb(scaleLightness(hsl, ambient), HD_BRIGHTNESS);
+  if (textureBrightness !== 0) {
+    const white = ambient < 0 ? 0 : ambient > 127 ? 0xffffff : ambient * 0x020202;
+    if (textureBrightness >= 256) rgb = white;
+    else {
+      const b = textureBrightness, k = 256 - b;
+      rgb = ((((white & 0xff00ff) * b + (rgb & 0xff00ff) * k) & 0xff00ff00) + (((white & 0xff00) * b + (rgb & 0xff00) * k) & 0xff0000)) >>> 8;
+    }
+  }
+  return rgb;
+}
+
+/** Grey of the given HSL lightness (0-127), as used under textured ground tiles. */
+export function greyRgb(lightness: number): number {
+  const v = Math.min(255, Math.max(0, Math.round(Math.pow(Math.max(2, Math.min(126, lightness)) / 128, HD_BRIGHTNESS) * 256)));
+  return (v << 16) | (v << 8) | v;
+}
