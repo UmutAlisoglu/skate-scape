@@ -1,5 +1,15 @@
 # Collaboration handoff — updated 2026-10-09
 
+## Latest changes (Claude, 2026-10-09) — supersede the texture, lighting and animation notes below
+
+- **Textures are real.** `npm run export:surfaces` compiles the 2009 client's own procedural texture code (`Texture`/`TextureOp*` from `vendor/rt4-client`, AGPL, not vendored) against the stubs in `tools/texgen/java` and renders all 680 textures exactly; the used ones go into `public/surfaces/textures.png` as a WebGL2 texture array. The old reconstructed atlas and `src/world/material.ts` are gone.
+- **HD look.** `tools/cache/model.ts` decodes texture spaces and computes GlModel UVs (planar/cylinder/cube/sphere) and smooth normals; `tools/world/mesh.ts` writes per-vertex colors (loc ambient + 64, texture brightness), normals and UVs to `*.shade.bin`, terrain uses textured underlays/overlays and the client's ground shadow map. Render chunks are format SCK2 (adds UVs, sRGB colors). `src/world/rs-material.ts` is the one shader for world, avatar, board and park: lit = color × (1.152 + 0.699 N·L), texture combine modes, alpha cutouts, beige linear fog; no tone mapping.
+- **Animation on the RS rig.** `src/player/rs-pose.ts` applies poses for the player animation base in floating point, tweens cache frames and crossfades any pose change. `src/player/skate-rig.ts` authors skate poses on base transforms (indices in `JOINT`) with leg IK on measured pivots. The earlier heuristic per-slot deformation rig was removed. Pose lab: `/lab.html`.
+- **Fixes.** Riding off a rail end no longer lands on the rail's own top; walk-mode HUD; training grounds use RS materials with cache textures; board colors scaled for RS lighting.
+- **Launcher.** `play.bat` / `npm run play` (`tools/play.mjs`).
+
+Export order is now: world, player, render, collision, surfaces.
+
 ## Current scope
 
 The user requested a fuller game, a camera that follows behind and turns with the rider, fairer collisions, solid visible surfaces, skating animation and detailed graphics. These requirements supersede the first-pass prototype behavior. No direct connection to Opus 5.5 or current Opus assignment was available. The Git baseline remains `c7aac86`; all work is left uncommitted and reviewable in the working tree.

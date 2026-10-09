@@ -98,7 +98,7 @@ async function main() {
         renderPosition.copy(player.position);renderHeading=heading;renderPitch=renderTilt=grindOffset=0;animator.reset();
         skating = !skating; board.root.visible = skating; player.rotation.set(0,skating?heading+Math.PI/2:heading+Math.PI,0); avatar.setSkatePose(null);
       }
-      if (keys.takePress('KeyT') && !busy) { busy = true; skater.speed = 0; avatar.setSkatePose(null); avatar.play('Teleport', { loop: false, maxDuration: 1.6, onDone: () => relocate(home) }); }
+      if (keys.takePress('KeyT') && !busy) { busy = true; skater.speed = 0; renderTilt = 0; player.rotation.set(0, player.rotation.y, 0, 'YXZ'); avatar.setSkatePose(null); avatar.play('Teleport', { loop: false, maxDuration: 1.6, onDone: () => relocate(home) }); }
       for (let i = 0; i < 10; i++) if (keys.takePress(`Digit${(i+1)%10}`) && !busy && emotes[i] && (!skating || (skater.grounded && skater.speed < 0.1))) {
         busy = true; avatar.setSkatePose(null); avatar.play(emotes[i], { loop: false, onDone: () => { busy = false; } });
       }

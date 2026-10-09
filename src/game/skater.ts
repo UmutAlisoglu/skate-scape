@@ -266,6 +266,11 @@ export class Skater {
         const side=input.steer<0?-1:1,offset=(rail.width??0.08)/2+0.30;
         const next=this.world.move(this.position,{x:-dz/length*offset*side,y:0,z:dx/length*offset*side});
         this.position={x:next.x,y:next.y,z:next.z};
+      } else if(!pop&&(grind.t<0||grind.t>1)) {
+        // Rolled off the end: clear the rail's own top so the landing check doesn't catch it.
+        const clear=0.25*grind.direction;
+        const next=this.world.move(this.position,{x:dx/length*clear,y:0,z:dz/length*clear});
+        this.position={x:next.x,y:next.y,z:next.z};
       }
       if(Math.abs(this.balance)>1)this.stumble('Lost grind balance · combo lost');
       if (pop) this.addTrick('Ollie out', 100);

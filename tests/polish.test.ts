@@ -52,3 +52,12 @@ test('tree thinning is deterministic and preserves non-tree landmarks',()=>{
   }
   assert.ok(kept>2500&&kept<4500);assert.equal(retainTree('Lumbridge castle',1,2,3,0),true);assert.equal(retainTree('Tree',1,2,3,1),true);
 });
+test('riding off the end of a solid rail lands on the floor, not on the rail it just left',()=>{
+  // the rail's collision box top sits at the grind height
+  const boxed:SkateWorld={...flat,groundAt:(x,z,fromY)=>Math.abs(x)<0.06&&z>-0.02&&z<2.02&&fromY>=0.6?0.6:0,rails:[{...rail,id:'short',a:{x:0,y:0.6,z:2},b:{x:0,y:0.6,z:0}}]};
+  const s=new Skater(boxed,{x:0,y:0.7,z:1.9});s.grounded=false;s.speed=4;s.verticalSpeed=-1;
+  s.update(1/60,neutral);assert.ok(s.grinding);
+  const landings:number[]=[];
+  for(let i=0;i<90;i++){s.update(1/60,neutral);for(const e of s.drainEvents())if(e.type==='land')landings.push(s.position.y);}
+  assert.equal(landings.length,1,`landed ${landings.length} times`);assert.ok(landings[0]<0.1,`landed at y=${landings[0]}`);
+});

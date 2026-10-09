@@ -43,6 +43,9 @@ export class Avatar {
   /** per triangle: true = flat shaded (render type 1) */
   private flat: boolean[] = [];
   private groups: number[][] = [];
+  // per-frame scratch, sized by compose()
+  private smooth = new Float64Array(0);
+  private faces = new Float64Array(0);
   private rig: SkateRigInfo | null = null;
   /** height (m) to raise the model so its soles sit on the deck */
   skateSoleOffset = 0.18;
@@ -180,6 +183,8 @@ export class Avatar {
     this.vy = new Float64Array(X.length);
     this.vz = new Float64Array(X.length);
     this.tris = Int32Array.from(tris);
+    this.smooth = new Float64Array(X.length * 3);
+    this.faces = new Float64Array(tris.length);
     this.groups = [];
     labels.forEach((l, v) => (this.groups[l] ??= []).push(v));
     let sole = -Infinity;
@@ -316,9 +321,8 @@ export class Avatar {
     vz.set(this.baseZ);
     if (this.base && pose.size) applyPose(pose, this.base, this.origins, this.groups, vx, vy, vz);
     const tris = this.tris;
-    const n = vx.length;
-    const smooth = new Float64Array(n * 3);
-    const faces = new Float64Array(tris.length);
+    const smooth = this.smooth.fill(0);
+    const faces = this.faces;
     for (let t = 0; t < tris.length; t += 3) {
       const a = tris[t], b = tris[t + 1], c = tris[t + 2];
       // three axes: (x, -y, -z)
