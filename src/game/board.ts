@@ -29,9 +29,9 @@ export class Skateboard {
     this.deck.add(deck, grip);
     const wheelGeometry = new THREE.CylinderGeometry(0.055, 0.055, 0.065, 10);
     wheelGeometry.rotateZ(Math.PI / 2);
-    const wheelMaterial = rsMaterial({ color: 0xe4d7b6 });
+    const wheelMaterial = rsMaterial({ color: 0x8a8068 });
     for (const z of [-0.32, 0.32]) {
-      const truck = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.035), rsMaterial({ color: 0x99a1a6 }));
+      const truck = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.035), rsMaterial({ color: 0x5a6064 }));
       truck.position.set(0, 0.075, z);
       this.deck.add(truck);
       for (const x of [-0.17, 0.17]) {
@@ -44,7 +44,8 @@ export class Skateboard {
     this.root.add(this.deck);
   }
 
-  setColor(color: number) { this.deckMaterial.uniforms.baseColor.value.copy(gammaColor(color)); }
+  /** Deck colors are given at full brightness; scale them like client face colors before RS lighting. */
+  setColor(color: number) { this.deckMaterial.uniforms.baseColor.value.copy(gammaColor(color)).multiplyScalar(0.62); }
 
   update(skater: Skater, dt: number, steer: number) {
     this.root.position.set(skater.position.x, skater.position.y - (skater.grinding ? 0.08 : 0), skater.position.z);

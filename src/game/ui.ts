@@ -8,12 +8,15 @@ export class GameUI {
   private root = document.createElement('div');
   private score: HTMLElement; private clock: HTMLElement; private state: HTMLElement; private combo: HTMLElement; private goal: HTMLElement; private toast: HTMLElement; private balance: HTMLElement; private marker: HTMLElement;
   private menu: string | null = 'title';
+  private controls: HTMLElement[] = [];
+  private shownMode: boolean | null = null;
   constructor(private career: Career, private actions: { start(mode: 'free' | 'run', training: boolean): void; practice(): void; board(index: number): void; pause(): void }) {
     this.root.id = 'game-ui';
-    this.root.innerHTML = `<div class="score-card"><span class="eyebrow">SCAPE SKATE</span><strong id="score">0</strong><span id="run-clock">FREE SKATE</span></div><div class="goal-card"><span class="eyebrow">NEXT QUEST</span><span id="next-goal"></span><button id="pause-game" aria-label="Pause game">Ⅱ</button></div><div class="combo-card"><span id="rider-state"></span><strong id="combo-text"></strong></div><div id="balance"><span>Balance · A / D</span><div class="balance-track"><i id="balance-marker"></i></div></div><div id="quest-toast"></div><div class="control-strip"><span>W push · S brake · A/D steer</span><span>Space ollie · Q flip · E shove</span><span>Auto-grind tops · M manual</span><button id="practice-button">P · Training grounds</button><button id="help-button">H · Controls</button></div>`;
+    this.root.innerHTML = `<div class="score-card"><span class="eyebrow">SCAPE SKATE</span><strong id="score">0</strong><span id="run-clock">FREE SKATE</span></div><div class="goal-card"><span class="eyebrow">NEXT QUEST</span><span id="next-goal"></span><button id="pause-game" aria-label="Pause game">Ⅱ</button></div><div class="combo-card"><span id="rider-state"></span><strong id="combo-text"></strong></div><div id="balance"><span>Balance · A / D</span><div class="balance-track"><i id="balance-marker"></i></div></div><div id="quest-toast"></div><div class="control-strip"><span id="controls-a"></span><span id="controls-b"></span><span id="controls-c"></span><button id="practice-button">P · Training grounds</button><button id="help-button">H · Controls</button></div>`;
     document.body.append(this.root);
     const get = (id: string) => this.root.querySelector<HTMLElement>(`#${id}`)!;
     this.score = get('score'); this.clock = get('run-clock'); this.state = get('rider-state'); this.combo = get('combo-text'); this.goal = get('next-goal'); this.toast = get('quest-toast'); this.balance = get('balance'); this.marker = get('balance-marker');
+    this.controls = ['controls-a', 'controls-b', 'controls-c'].map(get);
     get('pause-game').onclick = () => this.togglePause(); get('help-button').onclick = () => this.show('help'); get('practice-button').onclick = () => this.actions.practice();
     this.layer.id = 'menu-layer'; this.panel.className = 'menu-panel'; this.layer.append(this.panel); document.body.append(this.layer); this.show('title');
   }
@@ -57,8 +60,20 @@ export class GameUI {
     this.score.textContent = (this.career.mode === 'run' ? this.career.runScore : skater.totalScore).toLocaleString();
     const seconds = Math.ceil(this.career.remaining); this.clock.textContent = this.career.overtime && !this.career.ended ? 'LAST COMBO' : this.career.mode === 'run' ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : 'FREE SKATE';
     const phases: Record<string, string> = { push: 'Pushing', ride: 'Cruising', crouch: 'Crouching', pop: 'Ollie', flip: 'Kickflip', shove: 'Pop shove-it', air: 'In air', land: 'Landing', grind: 'Grinding', manual: 'Manual', bail: 'Bail', recover: 'Getting up', stumble: 'Sketchy landing' };
-    this.state.textContent = `${skating ? phases[skater.phase] : 'Walking'} · ${(skater.speed * 3.6).toFixed(0)} km/h`;
-    this.combo.textContent = skater.comboCount ? `${Math.round(skater.comboPoints).toLocaleString()} × ${skater.comboCount} · ${skater.message}` : skater.message;
+    if (this.shownMode !== skating) {
+      this.shownMode = skating;
+      const labels = skating
+        ? ['W push · S brake · A/D steer', 'Space ollie · Q flip · E shove', 'Auto-grind tops · M manual']
+        : ['WASD walk · Shift run', '1–0 emotes · R outfit', 'F back on the board'];
+      labels.forEach((text, i) => (this.controls[i].textContent = text));
+    }
+    if (skating) {
+      this.state.textContent = `${phases[skater.phase]} · ${(skater.speed * 3.6).toFixed(0)} km/h`;
+      this.combo.textContent = skater.comboCount ? `${Math.round(skater.comboPoints).toLocaleString()} × ${skater.comboCount} · ${skater.message}` : skater.message;
+    } else {
+      this.state.textContent = 'On foot';
+      this.combo.textContent = 'Explore Lumbridge · press F to skate again';
+    }
     this.goal.textContent = GOALS.find((g) => !this.career.profile.completed.includes(g.id))?.description ?? 'All quests complete · chase your best run';
     this.toast.textContent = this.career.toastTime > 0 ? this.career.toast : ''; this.toast.hidden = this.career.toastTime === 0;
     this.balance.hidden = !skater.manual && !skater.grinding; this.marker.style.left = `${50 + skater.balance * 45}%`;

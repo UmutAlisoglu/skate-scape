@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "play": "node tools/play.mjs",
     "build": "tsc --noEmit && vite build",
     "export:world": "tsx tools/export-world.ts",
     "export:player": "tsx tools/export-player.ts",

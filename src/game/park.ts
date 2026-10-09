@@ -1,36 +1,25 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Point, Rail } from './skater.ts';
+import { rsMaterial, gammaColor, type Surfaces } from '../world/rs-material.ts';
+
+// Cache texture ids (all used in Lumbridge, so they're in the exported texture set)
+const STONE_FLOOR = 301, STONE_WALL = 72, PLANKS = 160;
 
 export interface RuneToken { id: string; position: THREE.Vector3; mesh: THREE.Group; collected: boolean }
-export function trainingGrounds(scene: THREE.Scene) {
+export function trainingGrounds(scene: THREE.Scene, textures: Surfaces | null = null) {
   const center = new THREE.Vector3(-28, 2, -90);
   const surfaces: THREE.BufferGeometry[] = [];
-  function pattern(kind: 'stone' | 'wood') {
-    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
-    const context = canvas.getContext('2d')!;
-    context.fillStyle = kind === 'stone' ? '#a69c83' : '#9b7048'; context.fillRect(0,0,128,128);
-    for (let y=0;y<128;y++) for(let x=0;x<128;x++) {
-      const noise = (Math.imul(x+7,374761393)^Math.imul(y+11,668265263)) >>> 16 & 255;
-      context.fillStyle = `rgba(30,22,12,${noise/255*0.15})`; context.fillRect(x,y,1,1);
-    }
-    context.strokeStyle = kind === 'stone' ? '#686858' : '#634b35'; context.lineWidth = 2;
-    for(let row=0;row<4;row++) {
-      const y = row*32; context.beginPath(); context.moveTo(0,y); context.lineTo(128,y); context.stroke();
-      if(kind==='stone') for(let x=(row%2)*32;x<128;x+=64) { context.beginPath();context.moveTo(x,y);context.lineTo(x,y+32);context.stroke(); }
-      else for(let y2=y+4;y2<y+30;y2+=6) { context.beginPath();context.moveTo(0,y2);context.bezierCurveTo(35,y2-4,80,y2+5,128,y2);context.stroke(); }
-    }
-    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    return texture;
-  }
-  const stoneTexture = pattern('stone'), woodTexture = pattern('wood');
-  const stone = new THREE.MeshLambertMaterial({ color: 0xd6cbaa, map: stoneTexture });
-  const wood = new THREE.MeshLambertMaterial({ color: 0xf1d2a1, map: woodTexture });
-  const metal = new THREE.MeshLambertMaterial({ color: 0x6b8b91 });
-  const trim = new THREE.MeshLambertMaterial({ color: 0x355449 });
+  // Real cache textures under the RS shader. Colors are at about half lightness, like client face colors
+  // (ambient 64 / 128) before the client's lighting brightens them.
+  const stone = rsMaterial({ surfaces: textures, textureId: STONE_WALL, color: 0x8c877d });
+  const floorMaterial = rsMaterial({ surfaces: textures, textureId: STONE_FLOOR });
+  const wood = rsMaterial({ surfaces: textures, textureId: PLANKS, color: 0x87603a });
+  const metal = rsMaterial({ color: 0x4a5c62 });
+  const trim = rsMaterial({ color: 0x24443a });
   const add = (geometry: THREE.BufferGeometry, material: THREE.Material, solid = true) => {
     geometry.translate(center.x, center.y, center.z);
-    if (material === stone || material === wood) {
+    if (material === stone || material === wood || material === floorMaterial) {
       const positions = geometry.getAttribute('position'), normals = geometry.getAttribute('normal'), uv = new Float32Array(positions.count*2);
       for(let i=0;i<positions.count;i++) {
         const ny = Math.abs(normals.getY(i)), nx = Math.abs(normals.getX(i));
@@ -47,12 +36,12 @@ export function trainingGrounds(scene: THREE.Scene) {
     return mesh;
   };
   const box = (x: number, y: number, z: number, w: number, h: number, d: number, material = stone, solid = true) => add(new THREE.BoxGeometry(w, h, d).translate(x, y, z), material, solid);
-  box(0, -0.25, 0, 36, 0.5, 32);
-  const tiles=new THREE.InstancedMesh(new THREE.BoxGeometry(1.97,0.005,1.97),new THREE.MeshLambertMaterial({color:0xffffff,map:stoneTexture}),17*15);
+  box(0, -0.25, 0, 36, 0.5, 32, floorMaterial);
+  const tiles=new THREE.InstancedMesh(new THREE.BoxGeometry(1.97,0.005,1.97),floorMaterial,17*15);
   const matrix=new THREE.Matrix4();let tile=0;
   for (let x = -16; x <= 16; x += 2) for (let z = -14; z <= 14; z += 2) {
     matrix.makeTranslation(center.x+x,center.y+0.003,center.z+z);tiles.setMatrixAt(tile,matrix);
-    tiles.setColorAt(tile,new THREE.Color(((x+z)%4)?0xcfc7aa:0xbcb396));tile++;
+    tiles.setColorAt(tile,gammaColor(((x+z)%4)?0x8e8774:0x7e7764));tile++;
   }
   tiles.instanceMatrix.needsUpdate=true;tiles.instanceColor!.needsUpdate=true;tiles.computeBoundingSphere();scene.add(tiles);
   box(-18, 0.65, 0, 0.35, 1.3, 32); box(18, 0.65, 0, 0.35, 1.3, 32);

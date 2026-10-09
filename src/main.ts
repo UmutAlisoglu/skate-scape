@@ -48,7 +48,7 @@ async function main() {
     loadJson<Rail[]>(`${base}/rails.json`),
   ]);
   loading.textContent = 'Preparing the streets and training grounds…';
-  const park = trainingGrounds(scene);
+  const park = trainingGrounds(scene, surfaces);
   const collision = new WorldCollision([terrain.opaque, solids.opaque, park.collisionGeometry]); collision.rails = [...rails,...park.rails];
   collision.setTraversal(manifest.sizeTiles[0],manifest.sizeTiles[1],traversal);
   const [sx, sy] = manifest.spawn;
@@ -65,7 +65,7 @@ async function main() {
   let renderHeading=0,renderPitch=0,renderTilt=0,grindOffset=0;
   const career = new Career(localStorage, new URLSearchParams(location.search).has('test') ? 'scape-skate-test' : 'scape-skate-career'); let skating = true; let busy = false; let ui: GameUI;
   const colors = [0x74513a, 0x4b97ba, 0xa23f35, 0xd9b55d]; board.setColor(colors[career.profile.board]);
-  const relocate = (position: { x: number; y: number; z: number }) => { skating = true; busy = false; avatar.setSkatePose(null); skater.reset(position, 0); player.position.set(position.x, position.y, position.z);renderPosition.copy(player.position);renderHeading=renderPitch=renderTilt=grindOffset=0;animator.reset();board.root.visible = true; chase.snap(position,0); };
+  const relocate = (position: { x: number; y: number; z: number }, message = position === park.spawn ? 'Training grounds · collect the five runes' : 'Lumbridge · roll out and find a line') => { skater.message = message; skating = true; busy = false; avatar.setSkatePose(null); skater.reset(position, 0); player.position.set(position.x, position.y, position.z);renderPosition.copy(player.position);renderHeading=renderPitch=renderTilt=grindOffset=0;animator.reset();board.root.visible = true; chase.snap(position,0); };
   ui = new GameUI(career, {
     start: (mode, training) => { career.start(mode); skater.totalScore = 0; skater.drainEvents(); relocate(training ? park.spawn : home); },
     practice: () => relocate(park.spawn), board: (index) => board.setColor(colors[index]), pause: () => keys.clear(),
