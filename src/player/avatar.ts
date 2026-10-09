@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { hslToRgb } from '../shared/color.ts';
 import { SLOT, type AnimData, type ItemDef, type KitDef, type PartModel, type Wardrobe } from '../shared/player-data.ts';
+import { deformSkater, type SkatePose } from './skate-pose.ts';
+import { prepareSkateRig } from './skate-rig.ts';
 
 /** feature index (0-6) -> appearance slot, from the client's BASE_PART_MAP */
 const FEATURE_SLOT = [SLOT.HAIR, SLOT.JAW, SLOT.TORSO, SLOT.ARMS, SLOT.HANDS, SLOT.LEGS, SLOT.FEET];
@@ -42,12 +44,20 @@ export class Avatar {
   private vz = new Int32Array(0);
   private tris: number[] = [];
   private labelVertices: number[][] = [];
+  private vertexSlots: number[] = [];
+  private vertexBones: number[] = [];
+  private posedVertices = new Float32Array(0);
+  skateSoleOffset = 0.18;
+  private skatePose: SkatePose | null = null;
   // animation state
   private seq: AnimData['seqs'][number] | null = null;
   private frame = 0;
   private frameTime = 0;
   private onDone: (() => void) | null = null;
   private loop = true;
+  private finished = false;
+  private elapsed = 0;
+  private maxDuration = Infinity;
   private originX = 0;
   private originY = 0;
   private originZ = 0;
@@ -123,22 +133,26 @@ export class Avatar {
       if (item.hidesJaw) parts[SLOT.JAW] = null;
       if (item.hidesArms) parts[SLOT.ARMS] = null;
     }
-    this.compose(parts.filter((p): p is PartModel => !!p), look.colors);
+    const composed: { model: PartModel; slot: number }[] = [];
+    parts.forEach((model, slot) => { if (model) composed.push({ model, slot }); });
+    this.compose(composed, look.colors);
   }
 
-  private compose(parts: PartModel[], colors: number[]) {
+  private compose(parts: { model: PartModel; slot: number }[], colors: number[]) {
     const X: number[] = [];
     const Y: number[] = [];
     const Z: number[] = [];
     const labels: number[] = [];
     const tris: number[] = [];
     const triColors: number[] = [];
-    for (const p of parts) {
+    this.vertexSlots = [];
+    for (const { model: p, slot } of parts) {
       const offset = X.length;
       for (let i = 0; i < p.v.length; i += 3) {
         X.push(p.v[i]);
         Y.push(p.v[i + 1]);
         Z.push(p.v[i + 2]);
+        this.vertexSlots.push(slot);
       }
       labels.push(...p.b);
       for (let t = 0; t < p.c.length; t++) {
@@ -167,6 +181,11 @@ export class Avatar {
     this.vy = new Int32Array(X.length);
     this.vz = new Int32Array(X.length);
     this.tris = tris;
+    this.vertexBones = labels;
+    this.posedVertices = new Float32Array(X.length*3);
+    let sole=Infinity;
+    for(let v=0;v<Y.length;v++)if(this.vertexSlots[v]===SLOT.FEET)sole=Math.min(sole,-Y[v]/128);
+    this.skateSoleOffset=Number.isFinite(sole)?0.132-sole:0.18;
     this.labelVertices = [];
     labels.forEach((l, v) => (this.labelVertices[l] ??= []).push(v));
 
@@ -187,23 +206,40 @@ export class Avatar {
     this.applyFrame();
   }
 
-  play(name: string, opts: { loop?: boolean; onDone?: () => void } = {}) {
+  play(name: string, opts: { loop?: boolean; maxDuration?: number; onDone?: () => void } = {}) {
     const seq = this.anims.seqs.find((s) => s.name === name) ?? null;
     if (seq === this.seq && opts.loop !== false) return;
     this.seq = seq;
     this.frame = 0;
     this.frameTime = 0;
+    this.elapsed = 0;
+    this.maxDuration = Math.max(0, opts.maxDuration ?? Infinity);
     this.loop = opts.loop ?? true;
+    this.finished = false;
     this.onDone = opts.onDone ?? null;
     this.applyFrame();
+    if (!seq || seq.frames.length === 0) {
+      this.finished = true;
+      this.onDone = null;
+      opts.onDone?.();
+    }
   }
 
   get playing() {
     return this.seq?.name ?? null;
   }
 
+  setSkatePose(pose: SkatePose | null) {
+    if (pose === null && this.skatePose === null) return;
+    this.skatePose = pose;
+    this.applyFrame();
+  }
+
   update(dt: number) {
-    if (!this.seq) return;
+    if (this.skatePose || !this.seq || this.finished) return;
+    this.elapsed += dt;
+    // Some RS actions hold their last pose until a server update interrupts them.
+    if (this.elapsed >= this.maxDuration) { this.finish(); return; }
     this.frameTime += dt;
     let changed = false;
     // delays are client cycles of 20 ms
@@ -214,11 +250,7 @@ export class Avatar {
       if (this.frame >= this.seq.frames.length) {
         if (this.loop) this.frame = 0;
         else {
-          this.frame = this.seq.frames.length - 1;
-          const done = this.onDone;
-          this.onDone = null;
-          this.frameTime = 0;
-          done?.();
+          this.finish();
           return;
         }
       }
@@ -226,11 +258,21 @@ export class Avatar {
     if (changed) this.applyFrame();
   }
 
+  private finish() {
+    this.frame = this.seq!.frames.length - 1;
+    this.finished = true;
+    this.applyFrame();
+    const done = this.onDone;
+    this.onDone = null;
+    this.frameTime = 0;
+    done?.();
+  }
+
   private applyFrame() {
     this.vx.set(this.baseX);
     this.vy.set(this.baseY);
     this.vz.set(this.baseZ);
-    if (this.seq) {
+    if (this.seq && !this.skatePose) {
       const packed = this.seq.frames[this.frame];
       const frame = this.anims.framesets[packed >>> 16]?.[packed & 0xffff];
       const base = frame && this.anims.bases[frame.base];
@@ -241,14 +283,21 @@ export class Avatar {
         }
       }
     }
+    if (this.skatePose) {
+      const rig=prepareSkateRig(this.skatePose);
+      for (let v = 0; v < this.vx.length; v++) {
+        const p = deformSkater(this.vx[v] / 128, -this.vy[v] / 128, -this.vz[v] / 128, this.vertexSlots[v], this.skatePose,this.vertexBones[v],rig);
+        this.posedVertices[v*3]=p.x;this.posedVertices[v*3+1]=p.y;this.posedVertices[v*3+2]=p.z;
+      }
+    }
     // write non-indexed positions in meters, three.js axes (x east, y up, z south)
     const pos = this.geometry.attributes.position.array as Float32Array;
     const tris = this.tris;
     for (let i = 0; i < tris.length; i++) {
       const v = tris[i];
-      pos[i * 3] = this.vx[v] / 128;
-      pos[i * 3 + 1] = -this.vy[v] / 128;
-      pos[i * 3 + 2] = -this.vz[v] / 128;
+      pos[i * 3] = this.skatePose?this.posedVertices[v*3]:this.vx[v]/128;
+      pos[i * 3 + 1] = this.skatePose?this.posedVertices[v*3+1]:-this.vy[v]/128;
+      pos[i * 3 + 2] = this.skatePose?this.posedVertices[v*3+2]:-this.vz[v]/128;
     }
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.computeVertexNormals();

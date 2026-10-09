@@ -8,6 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "export:world": "tsx tools/export-world.ts",
     "export:player": "tsx tools/export-player.ts",
+    "export:collision": "tsx tools/export-collision.ts",
+    "export:surfaces": "tsx tools/export-surfaces.ts",
+    "export:render": "tsx tools/export-render.ts",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

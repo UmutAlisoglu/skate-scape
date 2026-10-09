@@ -8,8 +8,10 @@
       html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
       canvas { display: block; }
       #hud {
-        position: fixed; left: 12px; top: 10px; color: #ffff00; font: 13px/1.4 monospace;
-        text-shadow: 1px 1px 0 #000; pointer-events: none; white-space: pre;
+        position: fixed; left: 12px; top: 10px; max-width: calc(100vw - 40px);
+        padding: 8px 10px; border-radius: 4px; background: rgb(12 17 20 / 72%);
+        color: #fff5bd; font: 13px/1.4 monospace; pointer-events: none; white-space: pre-wrap;
+        text-shadow: 1px 1px 0 #000;
       }
     </style>
   </head>

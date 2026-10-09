@@ -41,13 +41,18 @@ grid.load(cache, xteas);
 console.log(`Loaded ${area.w}x${area.h} regions, ${grid.locs.length} loc spawns`);
 
 const terrain = buildTerrain(grid, defs);
-const { soup: locs, placed } = new LocBuilder(cache, defs).build(grid);
+const treeDensity=process.argv.includes('--trees=full')?1:0.35;
+const { soup: locs, placed, removedTrees, keptTrees } = new LocBuilder(cache, defs).build(grid,treeDensity);
 console.log(`Terrain: ${terrain.triangleCount} triangles, locs: ${locs.triangleCount} triangles (${placed.length} placed)`);
+console.log(`Tree cover: ${keptTrees} retained, ${removedTrees} removed (density ${treeDensity})`);
 
 const dir = join(OUT_DIR, name);
 mkdirSync(dir, { recursive: true });
 writeSoup(join(dir, 'terrain.bin'), terrain);
 writeSoup(join(dir, 'locs.bin'), locs);
+const traversal = new Uint8Array(grid.width * grid.height);
+for (let i = 0; i < traversal.length; i++) traversal[i] = (grid.flags[0][i] & 1) && !(grid.flags[1][i] & 2) ? 1 : 0;
+writeFileSync(join(dir, 'traversal.bin'), traversal);
 writeFileSync(
   join(dir, 'manifest.json'),
   JSON.stringify({
@@ -55,6 +60,7 @@ writeFileSync(
     baseTile: [grid.baseX, grid.baseY],
     sizeTiles: [grid.width, grid.height],
     spawn: [area.spawn[0] - grid.baseX, area.spawn[1] - grid.baseY],
+    treeCover:{density:treeDensity,kept:keptTrees,removed:removedTrees},
     // per-loc metadata, used later for auto-generated rails / wallrides
     locs: placed.map((p) => ({ id: p.id, name: p.name, type: p.type, rot: p.rot, plane: p.plane, x: p.x, y: p.y, t: [p.firstTriangle, p.triangleCount] })),
   }),
@@ -78,4 +84,7 @@ function writeSoup(path: string, soup: Soup) {
   }
   Buffer.from(soup.col).copy(buf, 4 + posBytes);
   writeFileSync(path, buf);
+  const surfaces = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) surfaces.writeUInt16LE(soup.textures[i], i * 2);
+  writeFileSync(path.replace('.bin', '.materials.bin'), surfaces);
 }

@@ -1,0 +1,35 @@
+:root { color-scheme: dark; font-family: Georgia, 'Times New Roman', serif; color: #f1e5c6; }
+body { margin: 0; overflow: hidden; background: #10231d; }
+canvas { display: block; outline: none; }
+button { font: 600 13px system-ui, sans-serif; color: #ecdfba; background: #1f3b32; border: 1px solid #71816a; border-radius: 4px; padding: 10px 15px; cursor: pointer; transition: background .15s; }
+button:hover { background: #385349; } button:focus-visible { outline: 2px solid #f4ca5b; outline-offset: 3px; }
+button:disabled { opacity: .4; cursor: default; } button.primary { background: #d6b268; color: #172c25; border-color: #e9cb86; }
+button.selected { border-color: #e9cb86; box-shadow: inset 0 0 0 1px #e9cb86; }
+.eyebrow { display: block; font: 700 10px system-ui, sans-serif; letter-spacing: .2em; color: #d5bd80; }
+#game-ui { position: fixed; inset: 0; pointer-events: none; text-shadow: 0 2px 3px #0008; }
+#game-ui button { pointer-events: auto; }
+.score-card { position: absolute; left: 25px; top: 22px; display: grid; gap: 3px; padding: 15px 20px; min-width: 110px; background: #17352be6; border-left: 3px solid #dbbd76; border-radius: 3px; }
+.score-card strong { font: 800 38px system-ui, sans-serif; line-height: 1.1; }
+#run-clock { font: 700 12px system-ui, sans-serif; letter-spacing: .08em; color: #b9d6be; }
+.goal-card { position: absolute; right: 25px; top: 22px; padding: 15px 52px 15px 18px; max-width: 260px; background: #17352be6; border-radius: 3px; font-size: 15px; }
+.goal-card .eyebrow { margin-bottom: 5px; } #pause-game { position: absolute; right: 10px; top: 12px; padding: 7px 10px; }
+.combo-card { position: absolute; bottom: 88px; left: 50%; transform: translateX(-50%); text-align: center; width: min(85vw, 780px); }
+.combo-card span { display: block; font: 600 11px system-ui, sans-serif; text-transform: uppercase; letter-spacing: .17em; color: #d0e7d9; margin-bottom: 9px; }
+.combo-card strong { font: 700 22px Georgia, serif; color: #f6d684; background: #17352bb5; padding: 7px 14px; border-radius: 4px; box-decoration-break: clone; line-height: 1.7; }
+.control-strip { position: absolute; bottom: 0; left: 0; right: 0; background: #102c24e8; min-height: 42px; display: flex; gap: 20px; align-items: center; justify-content: center; padding: 7px 16px; font: 11px system-ui, sans-serif; color: #d3ddc8; flex-wrap: wrap; }
+.control-strip button { padding: 6px 9px; font-size: 11px; }
+#quest-toast { position: absolute; top: 150px; left: 50%; transform: translateX(-50%); background: #d4b674; color: #153227; padding: 12px 22px; font-weight: bold; border: 1px solid #f7dea0; border-radius: 5px; }
+#balance { position: absolute; bottom: 167px; left: 50%; transform: translateX(-50%); width: 220px; text-align: center; font: 10px system-ui, sans-serif; }
+.balance-track { margin-top: 8px; height: 9px; background: linear-gradient(90deg,#a85c4b,#d1bb76 25%,#6cbca0 45%,#6cbca0 55%,#d1bb76 75%,#a85c4b); border: 1px solid #d7c792; border-radius: 10px; position: relative; }
+.balance-track i { position: absolute; width: 6px; height: 17px; top: -5px; background: white; border-radius: 3px; transform: translateX(-50%); }
+#menu-layer { position: fixed; inset: 0; display: grid; place-items: center; background: #081b16a6; backdrop-filter: blur(4px); padding: 16px; overflow: auto; }
+#menu-layer[hidden], [hidden] { display: none !important; }
+.menu-panel { width: min(720px, calc(100vw - 64px)); background: linear-gradient(145deg,#203d32f5,#122b24f8); border: 1px solid #819277; padding: 35px; box-shadow: 0 20px 100px #0008; border-radius: 8px; }
+.menu-panel h1 { font-size: clamp(26px, 4vw, 42px); letter-spacing: .06em; margin: 13px 0; color: #f4dfae; }
+.menu-intro { color: #c1cfba; font-size: 15px; line-height: 1.5; }
+.menu-actions { display: flex; gap: 9px; flex-wrap: wrap; margin: 22px 0; }
+.quest-list { padding: 0; margin: 20px 0; list-style: none; display: grid; gap: 8px; font-size: 13px; color: #d5dbc7; }
+.menu-details p { font: 13px/1.6 system-ui, sans-serif; color: #d5dbc7; }
+.board-picker { display: flex; gap: 8px; border-top: 1px solid #70816d55; padding-top: 18px; flex-wrap: wrap; }
+.menu-panel footer { margin-top: 20px; display: flex; justify-content: space-between; align-items: center; gap: 15px; font: 11px system-ui, sans-serif; color: #aebdab; }
+@media(max-width:700px) { .score-card { left: 12px; top: 12px; padding: 10px 12px; } .score-card strong { font-size: 29px; } .goal-card { right: 12px; top: 12px; max-width: 170px; font-size: 12px; } .control-strip { gap: 9px; } .control-strip span { display: none; } .menu-panel { padding: 20px; } .combo-card strong { font-size: 16px; } }

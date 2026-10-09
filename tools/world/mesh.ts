@@ -5,17 +5,20 @@ import { ARCHIVE } from '../cache/defs.ts';
 import type { CacheStore } from '../cache/store.ts';
 import { Model } from '../cache/model.ts';
 import type { TileGrid, LocSpawn } from './region.ts';
+import { retainTree, isTree } from './tree-policy.ts';
 
 /** Growable triangle soup: positions in RS fine units (x east, y down, z north) + one RGBA per triangle. */
 export class Soup {
   pos: number[] = [];
   col: number[] = [];
+  textures: number[] = [];
   get triangleCount() {
     return this.col.length / 4;
   }
-  tri(ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number, rgb: number, a = 255) {
+  tri(ax: number, ay: number, az: number, bx: number, by: number, bz: number, cx: number, cy: number, cz: number, rgb: number, a = 255, texture = -1) {
     this.pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
     this.col.push((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff, a);
+    this.textures.push(texture + 1);
   }
 }
 
@@ -46,8 +49,10 @@ export function buildTerrain(grid: TileGrid, defs: Defs): Soup {
         const underRgb = u > 0 && blended[t] >= 0 ? hslToRgb(blended[t]) : -1;
 
         let overRgb = -1;
+        let overTexture = -1;
         if (o > 0) {
           const flo = defs.overlay(o - 1);
+          overTexture = flo.texture;
           if (flo.texture >= 0) overRgb = hslToRgb(defs.textureColors[flo.texture]);
           else if (flo.color >= 0) overRgb = hslToRgb(flo.color);
         }
@@ -62,7 +67,7 @@ export function buildTerrain(grid: TileGrid, defs: Defs): Soup {
         const shape = grid.shapes[plane][t] + 1;
         const rot = grid.rotations[plane][t];
         if (shape === 1) {
-          if (overRgb >= 0) quad(soup, x0, z0, hSW, hSE, hNE, hNW, overRgb);
+          if (overRgb >= 0) quad(soup, x0, z0, hSW, hSE, hNE, hNW, overRgb, overTexture);
           continue;
         }
         // shaped tile: part underlay, part overlay
@@ -76,7 +81,7 @@ export function buildTerrain(grid: TileGrid, defs: Defs): Soup {
           const A = verts[a];
           const B = verts[b];
           const C = verts[c];
-          soup.tri(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2], rgb);
+          soup.tri(A[0], A[1], A[2], B[0], B[1], B[2], C[0], C[1], C[2], rgb, 255, isOverlay ? overTexture : -1);
         }
       }
     }
@@ -84,9 +89,9 @@ export function buildTerrain(grid: TileGrid, defs: Defs): Soup {
   return soup;
 }
 
-function quad(soup: Soup, x0: number, z0: number, sw: number, se: number, ne: number, nw: number, rgb: number) {
-  soup.tri(x0, sw, z0, x0 + 128, se, z0, x0 + 128, ne, z0 + 128, rgb);
-  soup.tri(x0, sw, z0, x0 + 128, ne, z0 + 128, x0, nw, z0 + 128, rgb);
+function quad(soup: Soup, x0: number, z0: number, sw: number, se: number, ne: number, nw: number, rgb: number, texture = -1) {
+  soup.tri(x0, sw, z0, x0 + 128, se, z0, x0 + 128, ne, z0 + 128, rgb, 255, texture);
+  soup.tri(x0, sw, z0, x0 + 128, ne, z0 + 128, x0, nw, z0 + 128, rgb, 255, texture);
 }
 
 function shapedVertex(code: number, rot: number, x0: number, z0: number, sw: number, se: number, ne: number, nw: number): [number, number, number] {
@@ -224,9 +229,10 @@ export class LocBuilder {
     return child !== undefined ? this.defs.loc(child) : loc;
   }
 
-  build(grid: TileGrid): { soup: Soup; placed: PlacedLoc[] } {
+  build(grid: TileGrid,treeDensity=1): { soup: Soup; placed: PlacedLoc[]; removedTrees: number; keptTrees: number } {
     const soup = new Soup();
     const placed: PlacedLoc[] = [];
+    let removedTrees=0,keptTrees=0;
     // walloff of the wall standing on each tile, used to push wall decorations out
     const wallOff = new Map<string, number>();
     for (const s of grid.locs) {
@@ -235,6 +241,8 @@ export class LocBuilder {
 
     for (const s of grid.locs) {
       const loc = this.resolve(s.id);
+      if(!retainTree(loc.name,s.id,grid.baseX+s.x,grid.baseY+s.y,treeDensity)){removedTrees++;continue;}
+      if(isTree(loc.name))keptTrees++;
       const first = soup.triangleCount;
       const swapped = s.rot === 1 || s.rot === 3;
       const width = swapped ? loc.length : loc.width;
@@ -275,17 +283,20 @@ export class LocBuilder {
 
       for (const { model, dx, dy } of parts) {
         if (!model) continue;
-        emitModel(soup, model, this.defs, fineX + dx, avgY, fineY + dy, loc.hillskew !== 0 ? (vx, vz) => grid.heightAt(s.plane, vx, vz) - avgY : null);
+        const minY = model.vy.reduce((a, b) => Math.min(a, b), Infinity);
+        const maxY = model.vy.reduce((a, b) => Math.max(a, b), -Infinity);
+        const grass = loc.name === 'null' && t === 22 && loc.blockwalk !== 1 && maxY - minY > 12 && maxY - minY < 100;
+        emitModel(soup, model, this.defs, fineX + dx, avgY, fineY + dy, loc.hillskew !== 0 ? (vx, vz) => grid.heightAt(s.plane, vx, vz) - avgY : null, grass);
       }
       const triangleCount = soup.triangleCount - first;
       if (triangleCount > 0) placed.push({ ...s, name: loc.name, firstTriangle: first, triangleCount });
     }
-    return { soup, placed };
+    return { soup, placed, removedTrees, keptTrees };
   }
 }
 
 /** Appends a model's visible faces; skew(x, z) returns extra height for hill-skewed locs. */
-export function emitModel(soup: Soup, m: Model, defs: Defs, ox: number, oy: number, oz: number, skew: ((x: number, z: number) => number) | null) {
+export function emitModel(soup: Soup, m: Model, defs: Defs, ox: number, oy: number, oz: number, skew: ((x: number, z: number) => number) | null, grass = false) {
   const n = m.vertexCount;
   const X = new Float64Array(n);
   const Y = new Float64Array(n);
@@ -304,9 +315,10 @@ export function emitModel(soup: Soup, m: Model, defs: Defs, ox: number, oy: numb
     if (alpha === 254 || (type === 3 && tex < 0)) rgb = 0;
     else if (tex >= 0) rgb = hslToRgb(defs.textureColors[tex] ?? 0);
     else rgb = hslToRgb(m.colors[t]);
+    if (grass) rgb = hslToRgb(m.colors[t]);
     const a = m.ta[t];
     const b = m.tb[t];
     const c = m.tc[t];
-    soup.tri(X[a], Y[a], Z[a], X[b], Y[b], Z[b], X[c], Y[c], Z[c], rgb, 255 - alpha);
+    soup.tri(X[a], Y[a], Z[a], X[b], Y[b], Z[b], X[c], Y[c], Z[c], rgb, 255 - alpha, grass ? -1 : tex);
   }
 }
