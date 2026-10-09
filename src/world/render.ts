@@ -3,12 +3,15 @@ import { decodeRenderChunk, distanceToChunkSquared, type RenderChunkRecord, type
 import { loadJson } from './load.ts';
 import type { Point } from '../game/skater.ts';
 
-export function chunkGeometry(record: RenderChunkRecord, buffer: ArrayBuffer) {
+/** lookup maps cache texture id + 1 to texture-array layer + 1 (see loadSurfaces); without it surfaces stay raw. */
+export function chunkGeometry(record: RenderChunkRecord, buffer: ArrayBuffer, lookup?: Uint16Array) {
   const data=decodeRenderChunk(buffer), geometry=new THREE.BufferGeometry();
+  if(lookup) for(let i=0;i<data.surfaces.length;i++) data.surfaces[i]=data.surfaces[i]<lookup.length?lookup[data.surfaces[i]]:0;
   geometry.setAttribute('position',new THREE.BufferAttribute(data.positions,3));
   geometry.setAttribute('normal',new THREE.BufferAttribute(data.normals,3,true));
   geometry.setAttribute('color',new THREE.BufferAttribute(data.colors,4,true));
   geometry.setAttribute('surface',new THREE.BufferAttribute(data.surfaces,1));
+  geometry.setAttribute('uv',new THREE.BufferAttribute(data.uvs,2));
   geometry.setIndex(new THREE.BufferAttribute(data.indices,1));
   const b=record.bounds;
   geometry.boundingBox=new THREE.Box3(new THREE.Vector3(b[0]*128,b[1]*128,b[2]*128),new THREE.Vector3(b[3]*128,b[4]*128,b[5]*128));
@@ -31,12 +34,12 @@ export class RenderWorld {
   private lastRefresh=-Infinity;
   private disposed=false;
   private controllers=new Set<AbortController>();
-  constructor(private base:string,private manifest:RenderManifest,private materials:{opaque:THREE.Material;translucent:THREE.Material}) {
-    if(manifest.version!==1) throw new Error('Unsupported render world. Run npm run export:render.');
+  constructor(private base:string,private manifest:RenderManifest,private materials:{opaque:THREE.Material;translucent:THREE.Material},private lookup?:Uint16Array) {
+    if(manifest.version!==2) throw new Error('Unsupported render world. Run npm run export:render.');
     this.group.name='Streamed world';
   }
-  static async load(base:string,materials:{opaque:THREE.Material;translucent:THREE.Material}) {
-    return new RenderWorld(base,await loadJson<RenderManifest>(`${base}/manifest.json`),materials);
+  static async load(base:string,materials:{opaque:THREE.Material;translucent:THREE.Material},lookup?:Uint16Array) {
+    return new RenderWorld(base,await loadJson<RenderManifest>(`${base}/manifest.json`),materials,lookup);
   }
   private wanted() {
     const radius=this.viewDistance+this.manifest.cellSize;
@@ -88,7 +91,7 @@ export class RenderWorld {
     const buffer=await response.arrayBuffer();
     if(this.disposed||distanceToChunkSquared(record,this.position.x,this.position.z)>(this.viewDistance+32)**2)return;
     if(buffer.byteLength!==record.bytes)throw new Error(`Incorrect render chunk size: ${record.file}`);
-    const geometry=chunkGeometry(record,buffer),mesh=new THREE.Mesh(geometry,this.materials[record.kind]);
+    const geometry=chunkGeometry(record,buffer,this.lookup),mesh=new THREE.Mesh(geometry,this.materials[record.kind]);
     mesh.name=record.id;mesh.scale.setScalar(1/128);mesh.updateMatrix();mesh.matrixAutoUpdate=false;
     mesh.visible=distanceToChunkSquared(record,this.position.x,this.position.z)<=this.viewDistance**2;
     this.loaded.set(record.id,{record,mesh,bytes:buffer.byteLength});this.group.add(mesh);this.revision++;

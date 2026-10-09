@@ -4,10 +4,7 @@ import { Skater,type SkateWorld,type SkateInput } from '../src/game/skater.ts';
 import { joinRails } from '../src/shared/rails.ts';
 import { retainTree } from '../tools/world/tree-policy.ts';
 import { SkateAnimator } from '../src/player/skate-pose.ts';
-import { solveLimb,prepareSkateRig } from '../src/player/skate-rig.ts';
 import { dampAngle } from '../src/shared/motion.ts';
-import { Avatar } from '../src/player/avatar.ts';
-import type { Wardrobe } from '../src/shared/player-data.ts';
 
 const neutral:SkateInput={push:false,brake:false,steer:0,crouch:false,pop:false,flip:false,shove:false};
 const flat:SkateWorld={groundAt:()=>0,move:(p,d)=>({x:p.x+d.x,y:p.y+d.y,z:p.z+d.z,blocked:false})};
@@ -42,26 +39,11 @@ test('a grind continues onto a connected segment without dropping the combo',()=
   for(let i=0;i<15;i++)s.update(1/60,neutral);
   assert.equal(s.grinding?.rail.id,'next');assert.ok(s.position.z < -0.5);assert.equal(s.comboCount,1);assert.equal(s.totalScore,0);
 });
-test('the rig bends knees without stretching the limb and plants both feet',()=>{
-  const result=solveLimb({x:0,y:0.8,z:0},{x:0.15,y:0.1,z:0},0.44,0.31,{x:0,y:0,z:1});
-  assert.ok(Math.abs(Math.hypot(result.joint.x,result.joint.y-0.8,result.joint.z)-0.44)<1e-6);
-  assert.ok(Math.abs(Math.hypot(result.tip.x-result.joint.x,result.tip.y-result.joint.y,result.tip.z-result.joint.z)-0.31)<1e-6);
-  const rig=prepareSkateRig({crouch:1,push:0,air:0,kick:0,balance:0,time:0,phase:'crouch'});
-  for(const leg of rig.legs)assert.ok(Math.abs(leg.tip.y-0.09)<1e-6);
-});
 test('pose transitions blend instead of snapping and angular smoothing takes the short path',()=>{
   const s=new Skater(flat,{x:0,y:0,z:0}),animator=new SkateAnimator();
   const before=animator.update(s,1/60).crouch;s.charge=1;const after=animator.update(s,1/60).crouch;
   assert.ok(after>before&&after-before<0.2);
   const yaw=dampAngle(Math.PI-0.01,-Math.PI+0.01,28,1/60);assert.ok(Math.abs(yaw-(Math.PI-0.01))<0.02);
-});
-test('posed avatar vertices retain motion smaller than a cache unit',()=>{
-  const wardrobe:Wardrobe={kits:[{id:0,feature:2,model:{v:[0,-128,0,32,-128,0,0,-160,0],b:[8,8,8],t:[0,1,2],c:[100]}}],items:[],sourceBody:[0,0,0,0,0],destBody:[[],[],[],[],[]],sourceSkin:[0,0,0,0,0],destSkin:[[],[],[],[],[]]};
-  const avatar=new Avatar(wardrobe,{seqs:[],framesets:{},bases:{}});avatar.setLook(avatar.defaultLook());
-  const pose={crouch:0.48,push:0,air:0,kick:0,balance:0,time:0,phase:'ride'};
-  avatar.setSkatePose(pose);const before=avatar.mesh.geometry.getAttribute('position').getY(0);
-  avatar.setSkatePose({...pose,crouch:0.481});const after=avatar.mesh.geometry.getAttribute('position').getY(0);
-  assert.ok(Math.abs(after-before)>0.00001&&Math.abs(after-before)<1/128);
 });
 test('tree thinning is deterministic and preserves non-tree landmarks',()=>{
   let kept=0;

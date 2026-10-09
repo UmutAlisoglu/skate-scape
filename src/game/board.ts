@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import type { Skater } from './skater.ts';
 import { dampAngle, ease } from '../shared/motion.ts';
+import { rsMaterial, gammaColor } from '../world/rs-material.ts';
 
 /** Procedural placeholder deck; no additional cache assets required. */
 export class Skateboard {
   readonly root = new THREE.Group();
   private deck = new THREE.Group();
   private wheels: THREE.Mesh[] = [];
-  private deckMaterial = new THREE.MeshLambertMaterial({ color: 0x4c3b25 });
+  private deckMaterial = rsMaterial({ color: 0x4c3b25 });
   constructor() {
     this.root.rotation.order = 'YXZ';
     const outline = new THREE.Shape();
@@ -22,15 +23,15 @@ export class Skateboard {
     geometry.rotateX(-Math.PI / 2);
     const deck = new THREE.Mesh(geometry, this.deckMaterial);
     deck.position.y = 0.095;
-    const grip = new THREE.Mesh(new THREE.ShapeGeometry(outline), new THREE.MeshLambertMaterial({ color: 0x232d2c, side: THREE.DoubleSide }));
+    const grip = new THREE.Mesh(new THREE.ShapeGeometry(outline), rsMaterial({ color: 0x232d2c, side: THREE.DoubleSide }));
     grip.rotation.x = -Math.PI / 2;
     grip.position.y = 0.132;
     this.deck.add(deck, grip);
     const wheelGeometry = new THREE.CylinderGeometry(0.055, 0.055, 0.065, 10);
     wheelGeometry.rotateZ(Math.PI / 2);
-    const wheelMaterial = new THREE.MeshLambertMaterial({ color: 0xe4d7b6 });
+    const wheelMaterial = rsMaterial({ color: 0xe4d7b6 });
     for (const z of [-0.32, 0.32]) {
-      const truck = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.035), new THREE.MeshLambertMaterial({ color: 0x99a1a6 }));
+      const truck = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.035), rsMaterial({ color: 0x99a1a6 }));
       truck.position.set(0, 0.075, z);
       this.deck.add(truck);
       for (const x of [-0.17, 0.17]) {
@@ -43,7 +44,7 @@ export class Skateboard {
     this.root.add(this.deck);
   }
 
-  setColor(color: number) { this.deckMaterial.color.setHex(color); }
+  setColor(color: number) { this.deckMaterial.uniforms.baseColor.value.copy(gammaColor(color)); }
 
   update(skater: Skater, dt: number, steer: number) {
     this.root.position.set(skater.position.x, skater.position.y - (skater.grinding ? 0.08 : 0), skater.position.z);

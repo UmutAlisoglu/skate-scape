@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { loadBytes, loadJson, loadSoup, type WorldManifest } from './world/load.ts';
-import { worldMaterials } from './world/material.ts';
+import { loadSurfaces, rsMaterial, rsUniforms } from './world/rs-material.ts';
+import { createSky } from './world/sky.ts';
 import { WorldCollision } from './world/collision.ts';
 import { RenderWorld } from './world/render.ts';
 import { Avatar } from './player/avatar.ts';
@@ -25,13 +26,11 @@ const loading = document.getElementById('hud')!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 const requestedRatio=Number(new URLSearchParams(location.search).get('dpr'));
 renderer.setPixelRatio(requestedRatio>0?Math.max(0.75,Math.min(requestedRatio,2)):Math.min(devicePixelRatio,1)); renderer.setSize(innerWidth, innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+renderer.toneMapping = THREE.NoToneMapping; // RS materials write final client-space colors
 renderer.domElement.tabIndex = 0; renderer.domElement.setAttribute('aria-label', 'Scape Skate game view');
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
-const sky = new THREE.Color(0x8da6aa); scene.background = sky; scene.fog = new THREE.Fog(sky, 38, 64);
-scene.add(new THREE.HemisphereLight(0xdbe7da, 0x4d4331, 1.0));
-const sun = new THREE.DirectionalLight(0xffe3b6, 1.4); sun.position.set(-0.5, 1, 0.35); scene.add(sun);
+const sky = createSky(rsUniforms.fogColor.value); scene.add(sky);
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 88);
 const chase = new ChaseCamera(camera, renderer.domElement);
 const keys = new GameInput(); const pad = new PadInput(); const audio = new SkateAudio();
@@ -42,9 +41,9 @@ async function main() {
   const base = `${import.meta.env.BASE_URL}world/${AREA}`, playerBase = `${import.meta.env.BASE_URL}player`;
   const manifest = await loadJson<WorldManifest>(`${base}/manifest.json`);
   loading.textContent = `Opening ${manifest.name}…`;
-  const [terrain, solids, wardrobe, anims, materials, traversal, rails] = await Promise.all([
+  const [terrain, solids, wardrobe, anims, surfaces, traversal, rails] = await Promise.all([
     loadSoup(`${base}/terrain.bin`, { positionsOnly: true }), loadSoup(`${base}/collision.bin`, { positionsOnly: true }),
-    loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), worldMaterials(`${import.meta.env.BASE_URL}surfaces`),
+    loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), loadSurfaces(`${import.meta.env.BASE_URL}surfaces`),
     loadBytes(`${base}/traversal.bin`),
     loadJson<Rail[]>(`${base}/rails.json`),
   ]);
@@ -55,8 +54,9 @@ async function main() {
   const [sx, sy] = manifest.spawn;
   const home = new THREE.Vector3(sx + 0.5, 0, -(sy + 0.5)); home.y = collision.groundAt(home.x, home.z, 30, true) ?? 0;
   loading.textContent='Opening nearby streets…';
-  const world=await RenderWorld.load(`${base}/render`,materials);scene.add(world.group);await world.preload(home);
-  const avatar = new Avatar(wardrobe, anims); let look = avatar.defaultLook(false);
+  const worldMaterials={opaque:rsMaterial({surfaces,vertexColors:true}),translucent:rsMaterial({surfaces,vertexColors:true,transparent:true})};
+  const world=await RenderWorld.load(`${base}/render`,worldMaterials,surfaces.lookup);scene.add(world.group);await world.preload(home);
+  const avatar = new Avatar(wardrobe, anims, surfaces); let look = avatar.defaultLook(false);
   look.colors = [1, 4, 2, 1, 0]; avatar.setLook(look); avatar.play('Idle'); scene.add(avatar.mesh);
   const player = avatar.mesh; player.position.copy(home);
   chase.controls.target.copy(home).add(new THREE.Vector3(0, 0.85, 0)); camera.position.copy(home).add(new THREE.Vector3(0, 2.6, 5)); chase.controls.update();
@@ -71,6 +71,7 @@ async function main() {
     practice: () => relocate(park.spawn), board: (index) => board.setColor(colors[index]), pause: () => keys.clear(),
   });
   loading.hidden = true;
+  if (new URLSearchParams(location.search).has('test')) Object.assign(window, { __scape: { avatar, skater, board, camera, chase, scene, world, collision } });
   document.addEventListener('visibilitychange', () => { if (document.hidden) ui.pause(); }); addEventListener('beforeunload', () => career.save());
   for (const token of park.tokens) if (career.profile.runes.includes(token.id)) { token.collected = true; token.mesh.visible = false; }
   const shadowCanvas = document.createElement('canvas'); shadowCanvas.width = shadowCanvas.height = 64;

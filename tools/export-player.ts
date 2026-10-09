@@ -37,6 +37,7 @@ const defs = new Defs(cache);
 const pdefs = new PlayerDefs(cache);
 
 const models = new Map<number, Model | null>();
+const textureBrightness: Record<number, number> = {};
 function model(id: number): Model | null {
   if (!models.has(id)) {
     const data = cache.file(ARCHIVE.MODELS, id);
@@ -61,13 +62,21 @@ function toPart(m: Model): PartModel {
   for (let i = 0; i < m.vertexCount; i++) v.push(m.vx[i], m.vy[i], m.vz[i]);
   const t: number[] = [];
   for (let i = 0; i < m.triangleCount; i++) t.push(m.ta[i], m.tb[i], m.tc[i]);
-  const c = Array.from(m.colors, (col, i) => {
-    const tex = m.textures ? m.textures[i] : -1;
-    return tex >= 0 ? defs.textureColors[tex] ?? col : col;
-  });
+  const c = Array.from(m.colors);
   const p: PartModel = { v, b: m.vertexBones ? Array.from(m.vertexBones) : new Array(m.vertexCount).fill(0), t, c };
   if (m.info) p.i = Array.from(m.info, (x) => x & 3);
   if (m.alpha) p.a = Array.from(m.alpha);
+  if (m.textures) {
+    // Keep real textures (drawn by the RS shader) with the client's per-face texture coordinates.
+    const cfg = defs.textures;
+    const x = Array.from(m.textures, (tex) => (tex >= 0 && tex < cfg.count && cfg.defined[tex] ? tex : -1));
+    if (x.some((tex) => tex >= 0)) {
+      const uvs = m.uvs();
+      p.x = x;
+      p.u = Array.from(uvs, (value) => Math.round(value * 1000) / 1000);
+      for (const tex of x) if (tex >= 0) textureBrightness[tex] = cfg.brightness[tex];
+    }
+  }
   return p;
 }
 
@@ -125,6 +134,7 @@ const wardrobe: Wardrobe = {
   kits, items,
   sourceBody: SOURCE_BODY_COLORS, destBody: DESTINATION_BODY_COLORS,
   sourceSkin: SOURCE_SKIN_COLORS, destSkin: DESTINATION_SKIN_COLORS,
+  textureBrightness,
 };
 
 // ---- animations ----

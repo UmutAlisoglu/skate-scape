@@ -8,12 +8,16 @@ export interface PartModel {
   b: number[];
   /** triangle vertex indices, abc interleaved */
   t: number[];
-  /** per-triangle HSL16 color (textured faces already resolved to their average color) */
+  /** per-triangle HSL16 color (textured faces keep their face color; the texture modulates it) */
   c: number[];
   /** per-triangle render type (0 smooth, 1 flat, 2 hidden, 3 black); omitted = all 0 */
   i?: number[];
   /** per-triangle alpha (0 opaque .. 255 invisible); omitted = all 0 */
   a?: number[];
+  /** per-triangle cache texture id (-1 = untextured); omitted = untextured */
+  x?: number[];
+  /** per-triangle texture coordinates (u, v for corners a, b, c), present with x */
+  u?: number[];
 }
 
 /** The 12 appearance slots of the 530 client. */
@@ -58,6 +62,8 @@ export interface Wardrobe {
   destBody: number[][];
   sourceSkin: number[];
   destSkin: number[][];
+  /** brightness (0-255) of each texture the wardrobe uses, see hdFaceColor */
+  textureBrightness?: Record<number, number>;
 }
 
 export interface AnimData {

@@ -1,83 +1,141 @@
+// Skate poses authored on the RS player animation base (the same joints idle/walk/emotes move), so every
+// kit and worn item deforms exactly as it does in the client's own animations. Legs use two-bone IK on the
+// measured hip/knee/ankle pivots so the feet stay planted on the deck.
+//
+// Model space is RS axes: x across the body (+x = the front-foot side, which faces the direction of travel
+// once the avatar is turned sideways on the board), y down, z = behind the body (the model faces -z).
+import { rsAngle, type AnimBase, type Pose } from './rs-pose.ts';
 import type { SkatePose } from './skate-pose.ts';
-import { SLOT } from '../shared/player-data.ts';
-import { ease } from '../shared/motion.ts';
-export interface Joint { x:number; y:number; z:number }
-interface Segment { start:Joint; end:Joint; restStart:Joint; restEnd:Joint; side:Joint; forward:Joint }
-interface Limb { upper:Segment; lower:Segment; tip:Joint; restTip:Joint }
-export interface SkateRig { hips:Joint; lean:number; legs:[Limb,Limb]; arms:[Limb,Limb] }
-const point=(x:number,y:number,z:number):Joint=>({x,y,z});
 
-/** Two-bone IK keeps each limb's length constant while moving its planted end. */
-export function solveLimb(start:Joint,target:Joint,upper:number,lower:number,pole:Joint) {
-  let dx=target.x-start.x,dy=target.y-start.y,dz=target.z-start.z;
-  const original=Math.hypot(dx,dy,dz)||1;
-  dx/=original;dy/=original;dz/=original;
-  const length=Math.max(Math.abs(upper-lower)+0.001,Math.min(upper+lower-0.001,original));
-  const tip=point(start.x+dx*length,start.y+dy*length,start.z+dz*length);
-  const projection=pole.x*dx+pole.y*dy+pole.z*dz;
-  let px=pole.x-dx*projection,py=pole.y-dy*projection,pz=pole.z-dz*projection;
-  let perpendicular=Math.hypot(px,py,pz);
-  if(perpendicular<0.001){px=dy;py=-dx;pz=0;perpendicular=Math.hypot(px,py)||1;}
-  px/=perpendicular;py/=perpendicular;pz/=perpendicular;
-  const along=(upper*upper+length*length-lower*lower)/(2*length);
-  const bend=Math.sqrt(Math.max(0,upper*upper-along*along));
-  return {tip,joint:point(start.x+dx*along+px*bend,start.y+dy*along+py*bend,start.z+dz*along+pz*bend)};
+/** Player base (base 0) transforms used for skating. Indices from the cache's player animation base. */
+export const JOINT = {
+  root: { move: 209, origin: 207 },
+  body: { turn: 205, move: 206, origin: 204 },
+  torso: { turn: 197, origin: 196 },
+  head: { turn: 194, origin: 193 },
+  // arm A is on +x (front), arm B on -x (back)
+  armA: { upper: 138, upperOrigin: 137, fore: 136, foreOrigin: 135, hand: 134, handOrigin: 133 },
+  armB: { upper: 163, upperOrigin: 162, fore: 161, foreOrigin: 160, hand: 159, handOrigin: 158 },
+  // leg A (+x) is the front foot, leg B (-x) the back / pushing foot
+  legA: { thigh: 171, hip: 170, shin: 169, knee: 168, foot: 167, ankle: 166 },
+  legB: { thigh: 179, hip: 178, shin: 177, knee: 176, foot: 175, ankle: 174 },
+} as const;
+
+type Vec = [number, number, number];
+export interface LegRig { hip: Vec; knee: Vec; ankle: Vec; upper: number; lower: number }
+export interface SkateRigInfo { legA: LegRig; legB: LegRig; /** lowest point of the feet (largest y) */ sole: number; valid: boolean }
+
+const sub = (a: Vec, b: Vec): Vec => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const len = (a: Vec) => Math.hypot(a[0], a[1], a[2]);
+
+/** Measures the leg pivots on the composed (rest) model, the way the client computes origins: label centroids. */
+export function measureSkateRig(base: AnimBase, groups: number[][], vx: ArrayLike<number>, vy: ArrayLike<number>, vz: ArrayLike<number>): SkateRigInfo {
+  const centroid = (index: number): Vec | null => {
+    let n = 0, x = 0, y = 0, z = 0;
+    for (const label of base.labels[index] ?? []) for (const v of groups[label] ?? []) { x += vx[v]; y += vy[v]; z += vz[v]; n++; }
+    return n ? [x / n, y / n, z / n] : null;
+  };
+  const leg = (j: typeof JOINT.legA | typeof JOINT.legB): LegRig | null => {
+    const hip = centroid(j.hip), knee = centroid(j.knee), ankle = centroid(j.ankle);
+    if (!hip || !knee || !ankle) return null;
+    return { hip, knee, ankle, upper: len(sub(knee, hip)), lower: len(sub(ankle, knee)) };
+  };
+  let sole = -Infinity;
+  for (let v = 0; v < vy.length; v++) sole = Math.max(sole, vy[v]);
+  const a = leg(JOINT.legA), b = leg(JOINT.legB);
+  const fallback = (x: number): LegRig => ({ hip: [x, -91, 0], knee: [x, -51, -2], ankle: [x, 2, 0], upper: 40, lower: 53 });
+  return { legA: a ?? fallback(10), legB: b ?? fallback(-10), sole: Number.isFinite(sole) ? sole : 6, valid: !!(a && b) };
 }
-function segment(start:Joint,end:Joint,restStart:Joint,restEnd:Joint):Segment {
-  let dx=end.x-start.x,dy=end.y-start.y,dz=end.z-start.z,length=Math.hypot(dx,dy,dz)||1;
-  dx/=length;dy/=length;dz/=length;
-  let sx=1-dx*dx,sy=-dx*dy,sz=-dx*dz;length=Math.hypot(sx,sy,sz)||1;
-  sx/=length;sy/=length;sz/=length;
-  return {start,end,restStart,restEnd,side:point(sx,sy,sz),forward:point(dy*sz-dz*sy,dz*sx-dx*sz,dx*sy-dy*sx)};
-}
-export function rootVertex(x:number,y:number,z:number,rig:SkateRig):Joint {
-  const height=y-0.84,c=Math.cos(rig.lean),s=Math.sin(rig.lean);
-  return point(x+rig.hips.x,rig.hips.y+c*height-s*z,rig.hips.z+s*height+c*z);
-}
-export function prepareSkateRig(pose:SkatePose):SkateRig {
-  const drop=Math.min(0.40,pose.crouch*0.25+pose.push*0.10);
-  const rig:SkateRig={hips:point((pose.manual??0)*-0.035,0.84-drop,0),lean:0.08+pose.crouch*0.10,legs:[] as unknown as [Limb,Limb],arms:[] as unknown as [Limb,Limb]};
-  for(let i=0;i<2;i++) {
-    const sign=i===0?-1:1,restHip=point(sign*0.075,0.84,0.01),restKnee=point(sign*0.07,0.40,0.02),restAnkle=point(sign*0.075,0.09,0.01);
-    const hip=rootVertex(restHip.x,restHip.y,restHip.z,rig);
-    const rear=sign<0,manual=pose.manual??0;
-    const ankle=point(sign*0.23-(rear?pose.push*0.22:0),0.09+pose.air*0.11+(rear?-pose.push*0.127+(pose.pushLift??0):0)+sign*manual*0.032,0.01+(rear?0:-pose.kick*0.12));
-    const leg=solveLimb(hip,ankle,0.44,0.31,point(0,0,1));
-    rig.legs[i]={upper:segment(hip,leg.joint,restHip,restKnee),lower:segment(leg.joint,leg.tip,restKnee,restAnkle),tip:leg.tip,restTip:restAnkle};
-    const restShoulder=point(sign*0.18,1.21,-0.01),restElbow=point(sign*0.22,0.95,-0.01),restWrist=point(sign*0.25,0.72,0);
-    const shoulder=rootVertex(restShoulder.x,restShoulder.y,restShoulder.z,rig);
-    const wrist=point(sign*(0.40+pose.air*0.08),shoulder.y-0.26+pose.air*0.12+sign*pose.balance*0.10,shoulder.z+0.16+pose.push*0.045);
-    const arm=solveLimb(shoulder,wrist,0.26,0.24,point(sign,0,-1));
-    rig.arms[i]={upper:segment(shoulder,arm.joint,restShoulder,restElbow),lower:segment(arm.joint,arm.tip,restElbow,restWrist),tip:arm.tip,restTip:restWrist};
+
+// RS rotation helpers (same conventions as Model.transformBone)
+function rotX(v: Vec, a: number): Vec { const s = Math.sin(a), c = Math.cos(a); return [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c]; }
+function rotZ(v: Vec, a: number): Vec { const s = Math.sin(a), c = Math.cos(a); return [v[1] * s + v[0] * c, v[1] * c - v[0] * s, v[2]]; }
+
+/**
+ * Two-bone IK in the client's joint order (foot, then shin about the knee, then thigh about the hip, child first).
+ * Returns radians: knee flex (shin X), thigh Z then X, so the ankle lands on `target` (model space).
+ */
+export function solveLeg(leg: LegRig, target: Vec) {
+  const upper = sub(leg.knee, leg.hip), lower = sub(leg.ankle, leg.knee);
+  const want = sub(target, leg.hip);
+  const reach = Math.min(Math.max(len(want), Math.abs(leg.upper - leg.lower) + 0.5), leg.upper + leg.lower - 0.5);
+  // knee flex: distance hip->ankle shrinks monotonically as the shin rotates back
+  let lo = 0, hi = Math.PI * 0.85;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2, s = rotX(lower, mid);
+    if (len([upper[0] + s[0], upper[1] + s[1], upper[2] + s[2]]) > reach) lo = mid; else hi = mid;
   }
-  return rig;
+  const knee = (lo + hi) / 2;
+  const bent = rotX(lower, knee);
+  const v: Vec = [upper[0] + bent[0], upper[1] + bent[1], upper[2] + bent[2]];
+  const scale = reach / (len(want) || 1);
+  const t: Vec = [want[0] * scale, want[1] * scale, want[2] * scale];
+  // Z (in the x-y plane) sets the sideways component, then X (y-z plane) the forward/back one.
+  const r = Math.hypot(v[0], v[1]) || 1;
+  const psi = Math.atan2(v[1], v[0]);
+  const thighZ = psi - Math.acos(Math.max(-1, Math.min(1, t[0] / r)));
+  const afterZ = rotZ(v, thighZ);
+  const thighX = Math.atan2(t[2], t[1]) - Math.atan2(afterZ[2], afterZ[1]);
+  return { knee, thighZ, thighX };
 }
-function skin(x:number,y:number,z:number,bone:Segment):Joint {
-  const t=(bone.restStart.y-y)/(bone.restStart.y-bone.restEnd.y);
-  const rx=bone.restStart.x+(bone.restEnd.x-bone.restStart.x)*t,rz=bone.restStart.z+(bone.restEnd.z-bone.restStart.z)*t;
-  const ox=x-rx,oz=z-rz;
-  return point(bone.start.x+(bone.end.x-bone.start.x)*t+bone.side.x*ox+bone.forward.x*oz,
-    bone.start.y+(bone.end.y-bone.start.y)*t+bone.side.y*ox+bone.forward.y*oz,
-    bone.start.z+(bone.end.z-bone.start.z)*t+bone.side.z*ox+bone.forward.z*oz);
-}
-const legBones=new Set([31,32,34,35,37,38,40,42,43,44,45,46,47,48]);
-const armBones=new Set([17,18,19,20,21,22,23,24,25,26,194,195,196,204,207,209]);
-const negativeBones=new Set([17,18,19,20,21,31,32,34,42,44,45,48,196,207,209]);
-const seams=new Set([1,2,3,8,29,39,41,59,60,86,91,92]);
-export function rigVertex(x:number,y:number,z:number,slot:number,pose:SkatePose,rig:SkateRig,bone?:number):Joint {
-  if(slot===SLOT.HEAD||slot===SLOT.HAIR||slot===SLOT.JAW||bone===1)return rootVertex(z+0.01,y,-x-0.01,rig);
-  if(slot===SLOT.CAPE||seams.has(bone??-1))return rootVertex(x,y,z,rig);
-  const side=bone!==undefined&&(legBones.has(bone)||armBones.has(bone))?(negativeBones.has(bone)?0:1):(x<0?0:1);
-  if(slot===SLOT.FEET) {
-    const leg=rig.legs[side];return point(leg.tip.x+x-leg.restTip.x,leg.tip.y+y-leg.restTip.y,leg.tip.z+z-leg.restTip.z);
+
+const DECK_TO_GROUND = 17; // RS units from the deck's top to the ground (board height ~0.13 m)
+
+/**
+ * The skate pose for this frame as RS transform values. `p` comes from SkateAnimator (already smoothed).
+ */
+export function skatePose(p: SkatePose, rig: SkateRigInfo): Pose {
+  const pose: Pose = new Map();
+  const set = (index: number, x: number, y = 0, z = 0) => pose.set(index, [x, y, z]);
+  const deg = (d: number) => rsAngle((d * Math.PI) / 180);
+  const manual = p.manual ?? 0, grind = p.grind ?? 0, pushLift = p.pushLift ?? 0, bail = p.bail ?? 0;
+
+  // --- hips: crouch lowers the body; pushing sinks onto the front leg ---
+  const drop = 7 + p.crouch * 24 + p.push * 10 + p.air * 6 + bail * 8;
+  set(JOINT.root.move, 0, drop, 0);
+
+  // --- feet on the deck (rest ankle height), spread over the bolts ---
+  const stance = 24;
+  // targets are where the ankle must end up once the root has dropped, so solve against the undropped body
+  const legTarget = (leg: LegRig, x: number, lift: number, z: number): Vec => [x, leg.ankle[1] - lift - drop, leg.ankle[2] + z];
+
+  // front foot: stays planted; the kick flicks it toward the toe side and up during a flip
+  const frontLift = p.air * 9 + p.kick * 10;
+  const front = legTarget(rig.legA, stance - p.push * 6 + p.kick * 6, frontLift, -p.kick * 16 - manual * 2);
+  // back foot: on the tail, or pushing along the ground beside the board
+  const cycle = p.pushPhase ?? 0;
+  const contact = cycle < 0.6;
+  const along = contact ? 4 - (cycle / 0.6) * 46 : -42 + ((cycle - 0.6) / 0.4) * 46; // slides back, then returns
+  const pushDown = p.push * (contact ? DECK_TO_GROUND : DECK_TO_GROUND * 0.25 - pushLift * 60);
+  const backX = -stance * (1 - p.push) + along * p.push;
+  const back = legTarget(rig.legB, backX, p.air * 9 - pushDown - manual * 2, -p.push * 20);
+  for (const [leg, joint, target] of [[rig.legA, JOINT.legA, front], [rig.legB, JOINT.legB, back]] as const) {
+    const ik = solveLeg(leg, target);
+    set(joint.shin, rsAngle(ik.knee));
+    set(joint.thigh, rsAngle(ik.thighX), 0, rsAngle(ik.thighZ));
+    // keep the foot flat: undo the leg's pitch and roll
+    set(joint.foot, rsAngle(-(ik.thighX + ik.knee)), 0, rsAngle(-ik.thighZ));
   }
-  if(legBones.has(bone??-1)||(slot===SLOT.LEGS&&y<0.74&&Math.abs(x)>0.02)) {
-    const leg=rig.legs[side],a=skin(x,y,z,leg.upper),b=skin(x,y,z,leg.lower),weight=ease((y-0.35)/0.10);
-    return point(b.x+(a.x-b.x)*weight,b.y+(a.y-b.y)*weight,b.z+(a.z-b.z)*weight);
-  }
-  if(armBones.has(bone??-1)||slot===SLOT.ARMS||slot===SLOT.HANDS||slot===SLOT.WEAPON||slot===SLOT.SHIELD) {
-    const arm=rig.arms[side],a=skin(x,y,z,arm.upper),b=skin(x,y,z,arm.lower),weight=ease((y-0.91)/0.08);
-    return point(b.x+(a.x-b.x)*weight,b.y+(a.y-b.y)*weight,b.z+(a.z-b.z)*weight);
-  }
-  return rootVertex(x,y,z,rig);
+
+  // --- upper body: turned toward the direction of travel, leaning with crouch / manuals ---
+  // a slow sway keeps a cruising rider alive; it fades out when anything else is going on
+  const calm = Math.max(0, 1 - p.push - p.air - grind - manual - p.crouch * 0.5);
+  const sway = Math.sin(p.time * 1.6) * calm;
+  const lean = 6 + p.crouch * 22 + p.push * 10 - manual * 14 + bail * 25 + sway * 1.5;
+  const twist = -18 - p.push * 22 - grind * 6 + sway * 3;
+  set(JOINT.torso.turn, deg(lean), deg(twist), deg(-p.balance * 10 + sway * 1.5));
+  // head looks down the board (90 degrees from the body's facing in total)
+  set(JOINT.head.turn, deg(-lean * 0.5 + p.crouch * 6), deg(-90 - twist), deg(p.balance * 6));
+
+  // --- arms: relaxed while rolling, out for balance on grinds / manuals / in the air ---
+  const balanceArms = Math.max(grind, manual * 0.8, p.air * 0.7, bail);
+  const swing = p.push * Math.sin(cycle * Math.PI * 2);
+  const raise = 14 + balanceArms * 50 + p.crouch * 6;
+  const elbow = 22 + p.crouch * 25 + balanceArms * 5;
+  // arm A (front side) leads; arm B trails, swinging opposite the push
+  set(JOINT.armA.upper, deg(-10 - p.crouch * 20 + swing * 18), 0, deg(raise + p.balance * 12));
+  set(JOINT.armA.fore, deg(-elbow));
+  set(JOINT.armB.upper, deg(-6 - p.crouch * 25 - swing * 22), 0, deg(-(raise - 2) + p.balance * 12));
+  set(JOINT.armB.fore, deg(-elbow - 4));
+  return pose;
 }
