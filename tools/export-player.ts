@@ -30,6 +30,8 @@ const ANIMS: [number, string][] = [
   [808, 'Idle'], [819, 'Walk'], [824, 'Run'], [714, 'Teleport'], [2106, 'Jig'], [2107, 'Spin'], [2108, 'Headbang'],
   [2109, 'Jump for joy'], [862, 'Cheer'], [866, 'Dance'], [3543, 'Zombie dance'], [6111, 'Rabbit hop'],
   [863, 'Wave'], [858, 'Bow'], [2110, 'Raspberry'], [1131, 'Glass box'], [4278, 'Air guitar'],
+  // bails use the player death animation; the rest are extra emotes
+  [836, 'Death'], [2111, 'Yawn'], [865, 'Clap'], [861, 'Laugh'], [2113, 'Shrug'], [2105, 'Panic'],
 ];
 
 const cache = new CacheStore(CACHE_DIR);

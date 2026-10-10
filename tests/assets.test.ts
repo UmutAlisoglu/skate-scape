@@ -20,6 +20,7 @@ test('triangle decoder preserves meter scale and separates alpha geometry', () =
   new Uint8Array(buffer, 40, 8).set([255, 0, 0, 255, 0, 255, 0, 128]);
   const soup = decodeSoup(buffer);
   assert.equal(soup.opaque.getAttribute('position').count, 3);
+  assert.equal(soup.opaque.getAttribute('position').getZ(2), -1, 'z is stored negated (north is -z)');
   assert.equal(soup.opaque.getAttribute('position').getX(1), 1);
   assert.equal(soup.translucent?.getAttribute('position').getY(0), 1);
   assert.ok(Math.abs(soup.translucent!.getAttribute('color').getW(0) - 128 / 255) < 0.00001);
@@ -75,4 +76,16 @@ test('action deadline releases a cache animation with a server-controlled hold f
   assert.equal(completed, 1);
   avatar.update(10);
   assert.equal(completed, 1);
+});
+
+test('soup positions reach 512 tiles: unsigned x and -z, signed y', async () => {
+  const { writeSoupCorner, soupPositions } = await import('../src/shared/soup.ts');
+  const buffer = new ArrayBuffer(4 + 22), view = new DataView(buffer);
+  view.setUint32(0, 1, true);
+  writeSoupCorner(view, 0, 320 * 128, -2 * 128, -383 * 128);
+  writeSoupCorner(view, 1, -5, 40, 3);
+  new Uint8Array(buffer, 22, 4).set([10, 20, 30, 255]);
+  const p = soupPositions(buffer, 0, 1);
+  assert.deepEqual([...p.slice(0, 6)], [320 * 128, -2 * 128, -383 * 128, 0, 40, 0], 'far corner kept; overhang past the edge clamped');
+  assert.equal(decodeSoup(buffer).opaque.getAttribute('position').getX(0), 320);
 });

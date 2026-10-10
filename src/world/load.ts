@@ -1,12 +1,16 @@
 import * as THREE from 'three';
+import { soupPositions } from '../shared/soup.ts';
 
 export interface WorldManifest {
   name: string;
   baseTile: [number, number];
   sizeTiles: [number, number];
   spawn: [number, number];
-  locs: { id: number; name: string; type: number; rot: number; plane: number; x: number; y: number; t: [number, number] }[];
 }
+/** Per-object metadata written by export-world (locs.json; older exports kept it inside the manifest). */
+export type PlacedLoc = { id: number; name: string; type: number; rot: number; plane: number; x: number; y: number; t: [number, number] };
+/** Collision split into square cells of `cell` tiles: [cellX, cellY, triangles] (see export-collision). */
+export interface CollisionIndex { cell: number; cells: [number, number, number][] }
 
 // sRGB byte -> linear float, so cache colors look right under three's color management
 const SRGB_TO_LINEAR = new Float32Array(256);
@@ -52,7 +56,7 @@ export function decodeSoup(buf: ArrayBuffer, source = 'triangle soup', options: 
   const n = new DataView(buf).getUint32(0, true);
   if (buf.byteLength !== 4 + n * 22) throw new Error(`${source}: invalid triangle data. Run the asset exporters in the README.`);
   if (surfaces && surfaces.length !== n) throw new Error(`${source}: material reference count does not match geometry`);
-  const pos = new Int16Array(buf, 4, n * 9);
+  const pos = soupPositions(buf, 0, n);
   const col = new Uint8Array(buf, 4 + n * 18, n * 4);
 
   let translucentCount = 0;

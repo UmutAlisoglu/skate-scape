@@ -5,7 +5,7 @@ import { encodeRenderChunk, decodeRenderChunk, distanceToChunkSquared, type Rend
 import { chunkGeometry } from '../src/world/render.ts';
 
 const triangle=():RenderChunkData=>({positions:new Int16Array([0,0,0,128,0,0,0,0,128]),normals:new Int8Array([0,127,0,0,127,0,0,127,0]),colors:new Uint8Array([20,40,60,255,20,40,60,255,20,40,60,255]),surfaces:new Uint16Array([6,6,6]),uvs:new Float32Array([0,1,1.5,1,0,-2.25]),indices:new Uint32Array([0,1,2])});
-const record:RenderChunkRecord={id:'test',file:'test.bin',kind:'opaque',vertices:3,triangles:1,bytes:0,bounds:[0,0,0,1,0,1]};
+const record:RenderChunkRecord={id:'test',file:'test.bin',kind:'opaque',vertices:3,triangles:1,bytes:0,bounds:[0,0,0,1,0,1],origin:[0,0,0]};
 
 test('compact render data retains positions, normals, alpha, materials, and vertex indices',()=>{
   const original=triangle(),buffer=encodeRenderChunk(original),decoded=decodeRenderChunk(buffer);

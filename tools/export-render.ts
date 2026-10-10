@@ -2,22 +2,23 @@
 // Usage: npm run export:render [-- <area>]   (after export:world)
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { encodeRenderChunk, type RenderChunkRecord, type RenderManifest } from '../src/shared/render-chunk.ts';
+import { soupPositions } from '../src/shared/soup.ts';
 
 const area = process.argv[2] ?? 'lumbridge';
 if (!/^[a-z0-9_-]+$/i.test(area)) throw new Error('Invalid area name');
-const base = `public/world/${area}`, directory = `${base}/render`, CELL = 16;
+const base = `public/world/${area}`, work = `work/world/${area}`, directory = `${base}/render`, CELL = 16;
 rmSync(directory, { recursive: true, force: true });
 mkdirSync(directory, { recursive: true });
 const chunks: RenderChunkRecord[] = [];
 
 for (const name of ['terrain', 'locs']) {
-  const data = readFileSync(`${base}/${name}.bin`), count = data.readUInt32LE(0);
+  const data = readFileSync(`${name === 'terrain' ? base : work}/${name}.bin`), count = data.readUInt32LE(0);
   if (data.length !== 4 + count * 22) throw new Error('Invalid world soup');
-  const material = readFileSync(`${base}/${name}.materials.bin`);
+  const material = readFileSync(`${work}/${name}.materials.bin`);
   if (material.length !== count * 2) throw new Error('Invalid material reference count');
-  const shade = readFileSync(`${base}/${name}.shade.bin`);
+  const shade = readFileSync(`${work}/${name}.shade.bin`);
   if (shade.readUInt32LE(0) !== count || shade.length !== 4 + count * 42) throw new Error('Invalid shading data. Run npm run export:world.');
-  const pos = new Int16Array(data.buffer, data.byteOffset + 4, count * 9), col = new Uint8Array(data.buffer, data.byteOffset + 4 + count * 18, count * 4);
+  const pos = soupPositions(data.buffer, data.byteOffset, count), col = new Uint8Array(data.buffer, data.byteOffset + 4 + count * 18, count * 4);
   const shadeCopy = new Uint8Array(shade.length);
   shadeCopy.set(shade);
   const uv = new Float32Array(shadeCopy.buffer, 4, count * 6);
@@ -57,13 +58,17 @@ for (const name of ['terrain', 'locs']) {
         I.push(index);
       }
     }
+    // positions relative to the chunk's lowest corner stay within 16 bits anywhere on the map
+    const origin: [number, number, number] = [Math.round(bounds[0] * 128), Math.round(bounds[1] * 128), Math.round(bounds[2] * 128)];
+    for (let i = 0; i < P.length; i += 3) { P[i] -= origin[0]; P[i + 1] -= origin[1]; P[i + 2] -= origin[2]; }
+    if (P.some((v) => v < -32768 || v > 32767)) throw new Error(`render chunk ${name}_${key} is too large for 16-bit positions`);
     const buffer = encodeRenderChunk({ positions: Int16Array.from(P), normals: Int8Array.from(N), colors: Uint8Array.from(C), surfaces: Uint16Array.from(S), uvs: Float32Array.from(U), indices: Uint32Array.from(I) });
     const id = `${name}_${key}`, file = `${id}.bin`;
     writeFileSync(`${directory}/${file}`, Buffer.from(buffer));
-    chunks.push({ id, file, kind: key.endsWith('translucent') ? 'translucent' : 'opaque', triangles: ids.length, vertices: P.length / 3, bytes: buffer.byteLength, bounds });
+    chunks.push({ id, file, kind: key.endsWith('translucent') ? 'translucent' : 'opaque', triangles: ids.length, vertices: P.length / 3, bytes: buffer.byteLength, bounds, origin });
     if (++completed % 30 === 0) console.log(`${name}: ${completed}/${groups.size} chunks`);
   }
 }
-const manifest: RenderManifest = { version: 2, cellSize: CELL, triangles: chunks.reduce((n, c) => n + c.triangles, 0), vertices: chunks.reduce((n, c) => n + c.vertices, 0), bytes: chunks.reduce((n, c) => n + c.bytes, 0), chunks };
+const manifest: RenderManifest = { version: 3, cellSize: CELL, triangles: chunks.reduce((n, c) => n + c.triangles, 0), vertices: chunks.reduce((n, c) => n + c.vertices, 0), bytes: chunks.reduce((n, c) => n + c.bytes, 0), chunks };
 writeFileSync(`${directory}/manifest.json`, JSON.stringify(manifest));
 console.log(`Render world: ${chunks.length} spatial chunks, ${manifest.triangles.toLocaleString()} triangles, ${manifest.vertices.toLocaleString()} shared vertices (${(manifest.bytes / 1e6).toFixed(1)} MB total; only nearby chunks load)`);

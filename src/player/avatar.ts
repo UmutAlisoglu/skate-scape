@@ -61,6 +61,7 @@ export class Avatar {
   private finished = false;
   private elapsed = 0;
   private maxDuration = Infinity;
+  private rate = 1;
   private current: Pose = new Map();
   private fadeFrom: Pose | null = null;
   private fadeTime = 0;
@@ -218,7 +219,8 @@ export class Avatar {
   // Animation
 
   /** Starts a cache animation (ignored while it's already looping). Crossfades from the current pose. */
-  play(name: string, opts: { loop?: boolean; maxDuration?: number; onDone?: () => void } = {}) {
+  /** `speed` plays the sequence faster (2 = double speed); maxDuration counts animation time. */
+  play(name: string, opts: { loop?: boolean; maxDuration?: number; onDone?: () => void; speed?: number } = {}) {
     const seq = this.anims.seqs.find((s) => s.name === name) ?? null;
     if (seq === this.seq && opts.loop !== false && !this.finished && !this.skate) return;
     this.beginFade();
@@ -227,6 +229,7 @@ export class Avatar {
     this.frameTime = 0;
     this.elapsed = 0;
     this.maxDuration = Math.max(0, opts.maxDuration ?? Infinity);
+    this.rate = opts.speed ?? 1;
     this.loop = opts.loop ?? true;
     this.finished = false;
     this.onDone = opts.onDone ?? null;
@@ -242,6 +245,19 @@ export class Avatar {
   get playing() {
     return this.seq?.name ?? null;
   }
+  /** what a replay needs: the skate pose shown, or the sequence and how far into it (animation time) */
+  get skatePose() { return this.skate; }
+  get sequenceTime() { return this.elapsed; }
+  /** Shows a sequence at a time without running it (replays); no callbacks fire. */
+  showSequence(name: string, time: number) {
+    const seq = this.anims.seqs.find((s) => s.name === name);
+    if (!seq || !seq.frames.length) return;
+    this.skate = null; this.seq = seq; this.loop = false; this.finished = true; this.onDone = null; this.fadeFrom = null;
+    let rest = time, frame = 0;
+    while (frame < seq.frames.length - 1 && rest >= this.delay(frame)) { rest -= this.delay(frame); frame++; }
+    this.frame = frame; this.frameTime = rest; this.elapsed = time;
+    this.render(this.targetPose());
+  }
 
   /** Skate pose parameters for this frame, or null to go back to cache animations. */
   setSkatePose(pose: SkatePose | null) {
@@ -255,6 +271,7 @@ export class Avatar {
       if (this.fadeTime >= CROSSFADE) this.fadeFrom = null;
     }
     if (!this.skate && this.seq && !this.finished) {
+      dt *= this.rate;
       this.elapsed += dt;
       // Some RS actions hold their last pose until a server update interrupts them.
       if (this.elapsed >= this.maxDuration) { this.finish(); return; }

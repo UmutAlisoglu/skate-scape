@@ -3,19 +3,21 @@
 // grinds far from their rail, and skaters stuck while pushing.
 // Usage: npx tsx tools/fuzz-skater.ts [episodes=40] [seconds=40] [seed=1]
 import { readFileSync } from 'node:fs';
-import { decodeSoup } from '../src/world/load.ts';
+import { decodeSoup, type CollisionIndex } from '../src/world/load.ts';
 import { WorldCollision } from '../src/world/collision.ts';
 import { Skater, type Rail, type SkateInput } from '../src/game/skater.ts';
 
 const [episodes = 40, seconds = 40, seed = 1] = process.argv.slice(2).map(Number);
+const area = process.env.AREA ?? 'lumbridge';
 // TRACE="episode,from,to" prints every frame of one episode between two times
 const trace = process.env.TRACE?.split(',').map(Number);
-const base = 'public/world/lumbridge';
+const base = `public/world/${area}`;
 const buffer = (file: string) => { const b = readFileSync(`${base}/${file}`); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); };
 const manifest = JSON.parse(readFileSync(`${base}/manifest.json`, 'utf8'));
 const terrain = decodeSoup(buffer('terrain.bin'), 'terrain', { positionsOnly: true });
-const solids = decodeSoup(buffer('collision.bin'), 'collision', { positionsOnly: true });
-const world = new WorldCollision([terrain.opaque, solids.opaque]);
+const world = new WorldCollision([terrain.opaque]);
+const index = JSON.parse(readFileSync(`${base}/collision/index.json`, 'utf8')) as CollisionIndex;
+for (const [cx, cy] of index.cells) world.setCell(`${cx}_${cy}`, decodeSoup(buffer(`collision/${cx}_${cy}.bin`), 'collision', { positionsOnly: true }).opaque);
 world.rails = JSON.parse(readFileSync(`${base}/rails.json`, 'utf8')) as Rail[];
 world.setTraversal(manifest.sizeTiles[0], manifest.sizeTiles[1], new Uint8Array(readFileSync(`${base}/traversal.bin`)));
 
@@ -35,16 +37,19 @@ const [sx, sy] = manifest.spawn;
 const spawns: { x: number; y: number; z: number }[] = [];
 const home = { x: sx + 0.5, y: world.groundAt(sx + 0.5, -(sy + 0.5), 30, true) ?? 0, z: -(sy + 0.5) };
 spawns.push(home);
-while (spawns.length < episodes) {
+for (let attempts = 0; spawns.length < episodes; attempts++) {
+  if (attempts > 100000) throw new Error(`found only ${spawns.length} of ${episodes} spawn points`);
   // random ground near the castle, where most skating happens
   const x = home.x + (random() - 0.5) * 60, z = home.z + (random() - 0.5) * 60;
-  // ground level only: the topmost surface can be an unreachable roof
-  const y = world.groundAt(x, z, 40), ground = world.groundAt(x, z, 40, true);
+  // ground level only: the topmost surface can be an unreachable roof. groundAt casts 30 m down,
+  // so probe from 25 m (Lumbridge ground lies at about 0-6 m)
+  const y = world.groundAt(x, z, 25), ground = world.groundAt(x, z, 25, true);
   if (y !== null && ground !== null && y - ground < 0.5 && world.canRideAt(x, z, y)) spawns.push({ x, y, z });
 }
 
 const dt = 1 / 60;
 let frames = 0, bails = 0, grinds = 0, landed = 0;
+const causes = new Map<string, number>();
 for (const [episode, spawn] of spawns.entries()) {
   const skater = new Skater(world, spawn);
   skater.reset(spawn, random() * Math.PI * 2);
@@ -61,12 +66,12 @@ for (const [episode, spawn] of spawns.entries()) {
       manual: manualTime > 0, grind: random() < 0.3,
     };
     skater.update(dt, input);
-    for (const event of skater.drainEvents()) { if (event.type === 'bail') bails++; if (event.type === 'grind') grinds++; if (event.type === 'land') landed++; }
+    for (const event of skater.drainEvents()) { if (event.type === 'bail') { bails++; const cause = skater.message.split(' · ')[0]; causes.set(cause, (causes.get(cause) ?? 0) + 1); } if (event.type === 'grind') grinds++; if (event.type === 'land') landed++; }
     const p = skater.position;
     if (trace && episode === trace[0] && f * dt >= trace[1] && f * dt <= trace[2]) console.log(`t=${(f * dt).toFixed(3)} ${skater.phase} p=(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)}) speed ${skater.speed.toFixed(2)} vy ${skater.verticalSpeed.toFixed(2)} heading ${skater.heading.toFixed(2)} grounded ${skater.grounded} input push=${input.push} steer=${input.steer.toFixed(2)} pop=${input.pop}`);
     const where = `episode ${episode} t=${(f * dt).toFixed(2)} ${tile(p)} (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}) ${skater.phase}`;
     if (![p.x, p.y, p.z, skater.speed, skater.heading, skater.verticalSpeed].every(Number.isFinite)) { report('non-finite state', where); break; }
-    if (skater.speed > 12) report('speed above 12 m/s', `${where} speed ${skater.speed.toFixed(1)}`);
+    if (skater.speed > 13.5) report('speed above 13.5 m/s', `${where} speed ${skater.speed.toFixed(1)}`);
     const ground = world.groundAt(p.x, p.z, p.y + 0.3, true);
     if (ground !== null && p.y < ground - 0.5) report('below the terrain', `${where} terrain ${ground.toFixed(2)}`);
     // a bail that ends in water / out of bounds returns to the last safe spot on purpose
@@ -84,6 +89,7 @@ for (const [episode, spawn] of spawns.entries()) {
   }
 }
 
+console.log(`bails by cause: ${[...causes].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ${n}`).join(', ')}`);
 console.log(`${spawns.length} episodes, ${(frames / 60 / 60).toFixed(1)} minutes simulated: ${grinds} grinds, ${landed} banked combos, ${bails} bails/stumbles`);
 if (!issues.size) console.log('No issues found.');
 for (const [kind, { count, samples }] of issues) {

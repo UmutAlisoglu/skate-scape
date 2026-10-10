@@ -6,6 +6,7 @@
 // once the avatar is turned sideways on the board), y down, z = behind the body (the model faces -z).
 import { rsAngle, type AnimBase, type Pose } from './rs-pose.ts';
 import type { SkatePose } from './skate-pose.ts';
+import type { GrabKind } from '../game/tricks.ts';
 
 /** Player base (base 0) transforms used for skating. Indices from the cache's player animation base. */
 export const JOINT = {
@@ -79,7 +80,41 @@ export function solveLeg(leg: LegRig, target: Vec) {
   return { knee, thighZ, thighX };
 }
 
+/** RS units the feet (and board) come up toward the body during a grab; the board is raised to match (0.24 m). */
+export const GRAB_LIFT = 30;
 const DECK_TO_GROUND = 17; // RS units from the deck's top to the ground (board height ~0.13 m)
+const DECK_HALF_WIDTH = 18; // RS units (0.14 m)
+/** Ankle z for a foot planted beside the deck: the edge, plus a heel that can reach 10 units behind the ankle. */
+const PUSH_SIDE = -(DECK_HALF_WIDTH + 14);
+
+/**
+ * Back-foot path while pushing, as [x along the board, lift above the deck (negative = below), z across].
+ * Getting off the deck: lift and step sideways first, then down, so the shoe never cuts through the deck.
+ * Pushing: slide back along the ground (contact), then swing forward lifted beside the board (recovery).
+ */
+function pushFoot(p: SkatePose, stance: number): [number, number, number] {
+  const engage = Math.max(0, Math.min(1, p.push));
+  const side = smooth(engage * 2), down = smooth(engage * 2 - 1);
+  const cycle = p.pushPhase ?? 0;
+  const contact = cycle < 0.6;
+  const along = contact ? 8 - (cycle / 0.6) * 46 : -38 + smooth((cycle - 0.6) / 0.4) * 46;
+  // recovery arc: off the ground up to just below deck height (it's beside the board, so no clipping)
+  const arc = contact ? 0 : Math.sin(((cycle - 0.6) / 0.4) * Math.PI) * 12;
+  const x = -stance + (along + stance) * side;
+  // while stepping off: a small hop over the deck lip, then down to the ground
+  const lift = Math.sin(side * Math.PI) * 6 * (1 - down) - DECK_TO_GROUND * down + arc * down;
+  const z = PUSH_SIDE * side;
+  return [x, lift, z];
+}
+/** Which hand reaches for each grab, as upper-arm [forward(-)/back(+), 0, out(+A / -B)] and elbow, in degrees. */
+const GRAB_REACH: Record<GrabKind, { arm: 'A' | 'B'; upper: Vec; fore: number }> = {
+  indy: { arm: 'B', upper: [-34, 0, 10], fore: -4 },       // back hand, toe side between the feet
+  tailgrab: { arm: 'B', upper: [-16, 0, -30], fore: -4 },  // back hand down to the tail
+  melon: { arm: 'A', upper: [22, 0, -14], fore: -6 },      // front hand, heel side between the feet
+  method: { arm: 'A', upper: [34, 0, -8], fore: -14 },     // front hand heel side, board tweaked up behind
+  nosegrab: { arm: 'A', upper: [-16, 0, 30], fore: -4 },   // front hand down to the nose
+};
+const smooth = (t: number) => { const c = Math.max(0, Math.min(1, t)); return c * c * (3 - 2 * c); };
 
 /**
  * The skate pose for this frame as RS transform values. `p` comes from SkateAnimator (already smoothed).
@@ -88,27 +123,25 @@ export function skatePose(p: SkatePose, rig: SkateRigInfo): Pose {
   const pose: Pose = new Map();
   const set = (index: number, x: number, y = 0, z = 0) => pose.set(index, [x, y, z]);
   const deg = (d: number) => rsAngle((d * Math.PI) / 180);
-  const manual = p.manual ?? 0, grind = p.grind ?? 0, pushLift = p.pushLift ?? 0, bail = p.bail ?? 0;
+  const manual = p.manual ?? 0, grind = p.grind ?? 0, bail = p.bail ?? 0, grab = p.grab ?? 0, nose = (p.nose ?? 0) * manual;
+  const tail = manual - nose;
 
   // --- hips: crouch lowers the body; pushing sinks onto the front leg ---
-  const drop = 7 + p.crouch * 24 + p.push * 10 + p.air * 6 + bail * 8;
+  // a grab tucks: the knees come up and the hand pulls the board up to meet it (GRAB_LIFT, also applied to the board)
+  const drop = 7 + p.crouch * 24 + p.push * 10 + p.air * 6 + bail * 8 + grab * 6;
   set(JOINT.root.move, 0, drop, 0);
 
   // --- feet on the deck (rest ankle height), spread over the bolts ---
   const stance = 24;
   // targets are where the ankle must end up once the root has dropped, so solve against the undropped body
-  const legTarget = (leg: LegRig, x: number, lift: number, z: number): Vec => [x, leg.ankle[1] - lift - drop, leg.ankle[2] + z];
+  const legTarget = (leg: LegRig, x: number, lift: number, z: number): Vec => [x, leg.ankle[1] - lift - grab * GRAB_LIFT - drop, leg.ankle[2] + z];
 
   // front foot: stays planted; the kick flicks it toward the toe side and up during a flip
   const frontLift = p.air * 9 + p.kick * 10;
-  const front = legTarget(rig.legA, stance - p.push * 6 + p.kick * 6, frontLift, -p.kick * 16 - manual * 2);
-  // back foot: on the tail, or pushing along the ground beside the board
-  const cycle = p.pushPhase ?? 0;
-  const contact = cycle < 0.6;
-  const along = contact ? 4 - (cycle / 0.6) * 46 : -42 + ((cycle - 0.6) / 0.4) * 46; // slides back, then returns
-  const pushDown = p.push * (contact ? DECK_TO_GROUND : DECK_TO_GROUND * 0.25 - pushLift * 60);
-  const backX = -stance * (1 - p.push) + along * p.push;
-  const back = legTarget(rig.legB, backX, p.air * 9 - pushDown - manual * 2, -p.push * 20);
+  const front = legTarget(rig.legA, stance - p.push * 6 + p.kick * 6, frontLift - nose * 3, -p.kick * 16 - manual * 2);
+  // back foot: on the tail, or pushing along the ground beside the board (toe side, clear of the deck edge)
+  const back = legTarget(rig.legB, ...pushFoot(p, stance));
+  back[1] += p.air * -9 + tail * 2 + nose * 4; // tuck in the air / weight on the tail (or nose) in a manual
   for (const [leg, joint, target] of [[rig.legA, JOINT.legA, front], [rig.legB, JOINT.legB, back]] as const) {
     const ik = solveLeg(leg, target);
     set(joint.shin, rsAngle(ik.knee));
@@ -119,23 +152,33 @@ export function skatePose(p: SkatePose, rig: SkateRigInfo): Pose {
 
   // --- upper body: turned toward the direction of travel, leaning with crouch / manuals ---
   // a slow sway keeps a cruising rider alive; it fades out when anything else is going on
-  const calm = Math.max(0, 1 - p.push - p.air - grind - manual - p.crouch * 0.5);
+  const calm = Math.max(0, 1 - p.push - p.air - grind - manual - grab - p.crouch * 0.5);
   const sway = Math.sin(p.time * 1.6) * calm;
-  const lean = 6 + p.crouch * 22 + p.push * 10 - manual * 14 + bail * 25 + sway * 1.5;
-  const twist = -18 - p.push * 22 - grind * 6 + sway * 3;
+  const lean = 6 + p.crouch * 22 + p.push * 10 - tail * 14 + nose * 16 + bail * 25 + grab * 18 + sway * 1.5;
+  // the shoulders and head turn toward the direction of travel: the nose normally, the tail when fakie
+  const facing = 1 - 2 * (p.fakie ?? 0);
+  const twist = facing * (-18 - p.push * 22 - grind * 6) + sway * 3;
   set(JOINT.torso.turn, deg(lean), deg(twist), deg(-p.balance * 10 + sway * 1.5));
   // head looks down the board (90 degrees from the body's facing in total)
-  set(JOINT.head.turn, deg(-lean * 0.5 + p.crouch * 6), deg(-90 - twist), deg(p.balance * 6));
+  set(JOINT.head.turn, deg(-lean * 0.5 + p.crouch * 6), deg(-90 * facing - twist), deg(p.balance * 6));
 
   // --- arms: relaxed while rolling, out for balance on grinds / manuals / in the air ---
   const balanceArms = Math.max(grind, manual * 0.8, p.air * 0.7, bail);
-  const swing = p.push * Math.sin(cycle * Math.PI * 2);
+  const swing = p.push * Math.sin((p.pushPhase ?? 0) * Math.PI * 2);
   const raise = 14 + balanceArms * 50 + p.crouch * 6;
   const elbow = 22 + p.crouch * 25 + balanceArms * 5;
   // arm A (front side) leads; arm B trails, swinging opposite the push
-  set(JOINT.armA.upper, deg(-10 - p.crouch * 20 + swing * 18), 0, deg(raise + p.balance * 12));
-  set(JOINT.armA.fore, deg(-elbow));
-  set(JOINT.armB.upper, deg(-6 - p.crouch * 25 - swing * 22), 0, deg(-(raise - 2) + p.balance * 12));
-  set(JOINT.armB.fore, deg(-elbow - 4));
+  let armA: Vec = [-10 - p.crouch * 20 + swing * 18, 0, raise + p.balance * 12], armB: Vec = [-6 - p.crouch * 25 - swing * 22, 0, -(raise - 2) + p.balance * 12];
+  let foreA = -elbow, foreB = -elbow - 4;
+  if (grab > 0) {
+    // one hand reaches down to the deck (x: forward/back swing, z: out to the side); the other balances
+    const reach = GRAB_REACH[p.grabKind ?? 'indy'], blend = (from: Vec, to: Vec): Vec => [from[0] + (to[0] - from[0]) * grab, 0, from[2] + (to[2] - from[2]) * grab];
+    if (reach.arm === 'A') { armA = blend(armA, reach.upper); foreA += (reach.fore - foreA) * grab; armB = blend(armB, [-10, 0, -70]); }
+    else { armB = blend(armB, reach.upper); foreB += (reach.fore - foreB) * grab; armA = blend(armA, [-10, 0, 70]); }
+  }
+  set(JOINT.armA.upper, deg(armA[0]), 0, deg(armA[2]));
+  set(JOINT.armA.fore, deg(foreA));
+  set(JOINT.armB.upper, deg(armB[0]), 0, deg(armB[2]));
+  set(JOINT.armB.fore, deg(foreB));
   return pose;
 }

@@ -1,4 +1,5 @@
 export interface RenderChunkData {
+  /** RS fine units relative to the chunk record's origin */
   positions: Int16Array;
   normals: Int8Array;
   /** sRGB vertex color before lighting + alpha */
@@ -63,8 +64,10 @@ export function decodeRenderChunk(buffer: ArrayBuffer): RenderChunkData {
 export interface RenderChunkRecord {
   id: string; file: string; kind: 'opaque' | 'translucent'; triangles: number; vertices: number; bytes: number;
   bounds: [number, number, number, number, number, number];
+  /** RS fine units added to every position (keeps 16-bit positions small anywhere on a large map) */
+  origin: [number, number, number];
 }
-export interface RenderManifest { version: 2; cellSize: number; triangles: number; vertices: number; bytes: number; chunks: RenderChunkRecord[] }
+export interface RenderManifest { version: 3; cellSize: number; triangles: number; vertices: number; bytes: number; chunks: RenderChunkRecord[] }
 
 export function distanceToChunkSquared(record: RenderChunkRecord, x: number, z: number) {
   const b = record.bounds, dx = Math.max(b[0] - x, 0, x - b[3]), dz = Math.max(b[2] - z, 0, z - b[5]);

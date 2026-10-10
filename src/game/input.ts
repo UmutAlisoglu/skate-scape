@@ -7,7 +7,7 @@ export class GameInput {
   constructor() {
     addEventListener('keydown', (event) => {
       if (event.target instanceof HTMLElement && (event.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName))) return;
-      if (event.code === 'Space' || event.code.startsWith('Arrow')) event.preventDefault();
+      if (event.code === 'Space' || event.code.startsWith('Arrow') || (event.code === 'Tab' && !(event.target instanceof HTMLButtonElement))) event.preventDefault();
       if (!this.held.has(event.code)) this.pressed.add(event.code);
       this.held.add(event.code);
     });

@@ -13,8 +13,9 @@ export function chunkGeometry(record: RenderChunkRecord, buffer: ArrayBuffer, lo
   geometry.setAttribute('surface',new THREE.BufferAttribute(data.surfaces,1));
   geometry.setAttribute('uv',new THREE.BufferAttribute(data.uvs,2));
   geometry.setIndex(new THREE.BufferAttribute(data.indices,1));
-  const b=record.bounds;
-  geometry.boundingBox=new THREE.Box3(new THREE.Vector3(b[0]*128,b[1]*128,b[2]*128),new THREE.Vector3(b[3]*128,b[4]*128,b[5]*128));
+  // positions are relative to the chunk origin; the mesh is placed there (see loadChunk)
+  const b=record.bounds,[ox,oy,oz]=record.origin;
+  geometry.boundingBox=new THREE.Box3(new THREE.Vector3(b[0]*128-ox,b[1]*128-oy,b[2]*128-oz),new THREE.Vector3(b[3]*128-ox,b[4]*128-oy,b[5]*128-oz));
   geometry.boundingSphere=geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
   return geometry;
 }
@@ -34,35 +35,47 @@ export class RenderWorld {
   private lastRefresh=-Infinity;
   private disposed=false;
   private controllers=new Set<AbortController>();
+  /** chunks a teleport is loading at its destination: never cancelled or unloaded until unpin() */
+  private pinned=new Set<string>();
   constructor(private base:string,private manifest:RenderManifest,private materials:{opaque:THREE.Material;translucent:THREE.Material},private lookup?:Uint16Array) {
-    if(manifest.version!==2) throw new Error('Unsupported render world. Run npm run export:render.');
+    if(manifest.version!==3) throw new Error('Unsupported render world. Run npm run export:render.');
     this.group.name='Streamed world';
   }
   static async load(base:string,materials:{opaque:THREE.Material;translucent:THREE.Material},lookup?:Uint16Array) {
     return new RenderWorld(base,await loadJson<RenderManifest>(`${base}/manifest.json`),materials,lookup);
   }
-  private wanted() {
-    const radius=this.viewDistance+this.manifest.cellSize;
+  unpin() { this.pinned.clear(); }
+  private wantedAt(position:Point,radius=this.viewDistance+this.manifest.cellSize) {
+    return this.manifest.chunks.filter(c=>distanceToChunkSquared(c,position.x,position.z)<=radius*radius);
+  }
+  private wanted(radius=this.viewDistance+this.manifest.cellSize) {
     return this.manifest.chunks.filter(c=>distanceToChunkSquared(c,this.position.x,this.position.z)<=radius*radius)
       .sort((a,b)=>distanceToChunkSquared(a,this.position.x,this.position.z)-distanceToChunkSquared(b,this.position.x,this.position.z));
   }
-  async preload(position:Point) {
-    this.position={...position};
-    await Promise.all(this.wanted().map(record=>this.request(record)));
+  /**
+   * Loads the chunks within `radius` of a point (everything in view by default); the rest streams in later.
+   * pin keeps them while the rider is still elsewhere (a teleport in progress); call unpin() after arriving.
+   */
+  async preload(position:Point,radius?:number,pin=false) {
+    if(!pin) this.position={...position};
+    const records=this.wantedAt(position,radius);
+    if(pin) for(const record of records) this.pinned.add(record.id);
+    await Promise.all(records.map(record=>this.request(record)));
+    if(pin) return;
     this.update(position,performance.now());
   }
   update(position:Point,time:number) {
     this.position={...position};
     for(const [id,entry] of this.loaded) {
       const distance=distanceToChunkSquared(entry.record,position.x,position.z);
-      if(distance>(this.viewDistance+32)**2) { this.group.remove(entry.mesh);entry.mesh.geometry.dispose();this.loaded.delete(id);this.revision++; }
+      if(distance>(this.viewDistance+32)**2&&!this.pinned.has(id)) { this.group.remove(entry.mesh);entry.mesh.geometry.dispose();this.loaded.delete(id);this.revision++; }
       else entry.mesh.visible=distance<=this.viewDistance**2;
     }
     if(time-this.lastRefresh<250) return;
     this.lastRefresh=time;
     // Retire queued requests after a teleport; in-flight responses are also checked before adding meshes.
     this.jobs=this.jobs.filter(job=>{
-      if(distanceToChunkSquared(job.record,position.x,position.z)<=(this.viewDistance+32)**2) return true;
+      if(distanceToChunkSquared(job.record,position.x,position.z)<=(this.viewDistance+32)**2||this.pinned.has(job.record.id)) return true;
       this.pending.delete(job.record.id);job.resolve();return false;
     });
     for(const record of this.wanted()) if(!this.loaded.has(record.id)&&!this.pending.has(record.id)) {
@@ -77,7 +90,7 @@ export class RenderWorld {
     this.pending.set(record.id,promise);this.jobs.push({record,resolve,reject});this.pump();return promise;
   }
   private pump() {
-    while(!this.disposed&&this.active<2&&this.jobs.length) {
+    while(!this.disposed&&this.active<6&&this.jobs.length) {
       const job=this.jobs.shift()!;this.active++;
       const controller=new AbortController();this.controllers.add(controller);
       void this.loadChunk(job.record,controller.signal).then(job.resolve,job.reject).finally(()=>{
@@ -89,10 +102,10 @@ export class RenderWorld {
     const response=await fetch(`${this.base}/${record.file}`,{signal});
     if(!response.ok) throw new Error(`${record.file}: HTTP ${response.status}`);
     const buffer=await response.arrayBuffer();
-    if(this.disposed||distanceToChunkSquared(record,this.position.x,this.position.z)>(this.viewDistance+32)**2)return;
+    if(this.disposed||(distanceToChunkSquared(record,this.position.x,this.position.z)>(this.viewDistance+32)**2&&!this.pinned.has(record.id)))return;
     if(buffer.byteLength!==record.bytes)throw new Error(`Incorrect render chunk size: ${record.file}`);
     const geometry=chunkGeometry(record,buffer,this.lookup),mesh=new THREE.Mesh(geometry,this.materials[record.kind]);
-    mesh.name=record.id;mesh.scale.setScalar(1/128);mesh.updateMatrix();mesh.matrixAutoUpdate=false;
+    mesh.name=record.id;mesh.scale.setScalar(1/128);mesh.position.set(record.origin[0]/128,record.origin[1]/128,record.origin[2]/128);mesh.updateMatrix();mesh.matrixAutoUpdate=false;
     mesh.visible=distanceToChunkSquared(record,this.position.x,this.position.z)<=this.viewDistance**2;
     this.loaded.set(record.id,{record,mesh,bytes:buffer.byteLength});this.group.add(mesh);this.revision++;
   }

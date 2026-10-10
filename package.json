@@ -13,7 +13,8 @@
     "export:surfaces": "tsx tools/export-surfaces.ts",
     "export:render": "tsx tools/export-render.ts",
     "test": "tsx --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "export:minimap": "tsx tools/export-minimap.ts"
   },
   "dependencies": {
     "seek-bzip": "^2.0.0",
