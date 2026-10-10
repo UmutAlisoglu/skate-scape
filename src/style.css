@@ -83,3 +83,82 @@ button.selected { border-color: #e9cb86; box-shadow: inset 0 0 0 1px #e9cb86; }
 .board-picker button.deck { background: var(--deck); color: var(--ink); border: 1px solid #0006; font-size: 11px; padding: 5px 8px; }
 .board-picker button.deck:disabled { filter: grayscale(0.85) brightness(0.6); }
 .board-picker button.deck.selected { outline: 2px solid #f6e3a1; outline-offset: 1px; }
+.combo-card strong.idle { display: none; }
+/* combo ratings in RS metals */
+#combo-flash small { display: block; font: italic 700 20px Georgia, serif; margin-top: -2px; }
+.metal.bronze { color: #d08a4a; } .metal.iron { color: #b9b9b9; } .metal.steel { color: #dfe7ec; } .metal.mithril { color: #8a9cff; }
+.metal.adamant { color: #6fd37a; } .metal.rune { color: #5ee6f0; } .metal.dragon { color: #ff5a45; }
+.metal.thirdage { background: linear-gradient(90deg, #fff, #f6d35b, #fff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+/* live key hints above the controls, and the landing window that links the next trick */
+#hint-line { position: absolute; bottom: 50px; left: 50%; transform: translateX(-50%); max-width: min(92vw, 760px); text-align: center; font: 600 12px system-ui, sans-serif; color: #e9efd9; background: #0f251ecc; border: 1px solid #3c5a48; border-radius: 6px; padding: 5px 12px; text-shadow: 0 1px 2px #000a; pointer-events: none; }
+#hint-line kbd { display: inline-block; min-width: 1.6em; padding: 1px 6px; margin: 0 2px; font: 700 11px system-ui, sans-serif; color: #18321f; background: linear-gradient(#f6e7b6, #d7bf7d); border: 1px solid #fff2c6; border-bottom-width: 2px; border-radius: 4px; text-align: center; }
+.combo-card .link-track { display: block; width: 180px; height: 4px; margin: 8px auto 0; background: #0b1a1499; border-radius: 2px; overflow: hidden; visibility: hidden; }
+.combo-card .link-track.on { visibility: visible; }
+.combo-card .link-track i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #d2a51c, #fff07a); }
+#unlock-card { position: absolute; top: 210px; left: 50%; transform: translateX(-50%); display: grid; gap: 4px; text-align: center; background: #133126f2; border: 1px solid #d4b674; border-radius: 6px; padding: 12px 22px; box-shadow: 0 6px 22px #0008; animation: unlock-in 0.35s ease-out; }
+#unlock-card b { font: 700 22px Georgia, serif; color: #ffd76a; }
+#unlock-card span:last-child { font: 13px system-ui, sans-serif; color: #e3e9d4; }
+@keyframes unlock-in { from { opacity: 0; transform: translate(-50%, -10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.skill-guide { list-style: none; padding: 0; margin: 6px 0 14px; display: grid; gap: 4px; font: 12px system-ui, sans-serif; color: #9aa792; }
+.skill-guide li { display: grid; grid-template-columns: 2.2em 9.5em 1fr; gap: 8px; align-items: baseline; }
+.skill-guide li i { font-style: normal; font-weight: 700; color: #6f7c68; text-align: right; }
+.skill-guide li b { color: #8e9a87; }
+.skill-guide li.got { color: #d5dbc7; }
+.skill-guide li.got i, .skill-guide li.got b { color: #f1d58e; }
+@media(max-width:700px) { #hint-line { bottom: 46px; font-size: 11px; } .skill-guide li { grid-template-columns: 2.2em 1fr; } .skill-guide li span { grid-column: 2; } }
+/* the teleport menu: destinations grouped by kingdom, scrolling when the whole world is listed */
+.teleport-region { margin: 14px 0 4px; font: 700 11px system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase; color: #9fc2a8; }
+.teleport-list button.teleport { position: relative; }
+.teleport-list button.teleport i { position: absolute; top: 9px; right: 10px; font: 600 10px system-ui, sans-serif; font-style: normal; color: #9fb79f; }
+.menu-panel { max-height: calc(100vh - 48px); overflow-y: auto; }
+/* RS public chat: yellow overhead text with the client's chat effects, and the chatbox */
+#overhead-chat { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+#overhead-chat .overhead { position: absolute; left: 0; top: 0; white-space: nowrap; font: 700 13px Arial, Helvetica, sans-serif; color: #ffff00; text-shadow: 1px 1px 0 #000; will-change: transform; }
+#overhead-chat .overhead span { display: inline-block; white-space: pre; }
+#overhead-chat .wave span, #overhead-chat .wave2 span { animation: chat-wave 0.8s ease-in-out infinite; }
+#overhead-chat .wave2 span { animation-name: chat-wave2; }
+#overhead-chat .shake span { animation: chat-shake 0.12s steps(2) infinite; }
+#overhead-chat .flash1 { animation: chat-flash1 0.4s steps(1) infinite; }
+#overhead-chat .flash2 { animation: chat-flash2 0.4s steps(1) infinite; }
+#overhead-chat .flash3 { animation: chat-flash3 0.4s steps(1) infinite; }
+#overhead-chat .glow1 { animation: chat-glow1 1.6s linear infinite; }
+#overhead-chat .glow2 { animation: chat-glow2 1.6s linear infinite; }
+#overhead-chat .glow3 { animation: chat-glow3 1.6s linear infinite; }
+#overhead-chat .scroll { clip-path: inset(0); animation: chat-scroll 2.4s linear infinite; }
+#overhead-chat .slide { animation: chat-slide 0.5s ease-out; }
+@keyframes chat-wave { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@keyframes chat-wave2 { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(2px, -4px); } 75% { transform: translate(-2px, 4px); } }
+@keyframes chat-shake { 0% { transform: translate(1px, -1px); } 100% { transform: translate(-1px, 1px); } }
+@keyframes chat-flash1 { 0% { color: #ff0000; } 50% { color: #ffff00; } }
+@keyframes chat-flash2 { 0% { color: #00ffff; } 50% { color: #0000ff; } }
+@keyframes chat-flash3 { 0% { color: #00b000; } 50% { color: #80ff80; } }
+@keyframes chat-glow1 { 0% { color: #ff0000; } 33% { color: #ffff00; } 66% { color: #00ffff; } 100% { color: #ff0000; } }
+@keyframes chat-glow2 { 0% { color: #ff0000; } 33% { color: #ff00ff; } 66% { color: #0000ff; } 100% { color: #ff0000; } }
+@keyframes chat-glow3 { 0% { color: #ffffff; } 33% { color: #00ff00; } 66% { color: #00ffff; } 100% { color: #ffffff; } }
+@keyframes chat-scroll { from { text-indent: 100%; } to { text-indent: -100%; } }
+@keyframes chat-slide { from { margin-top: -20px; opacity: 0; } to { margin-top: 0; opacity: 1; } }
+#chatbox { position: absolute; left: 12px; bottom: 50px; width: min(340px, 60vw); padding: 6px 9px; background: #0d1a14b8; border: 1px solid #3c5a48; border-radius: 4px; font: 12px Arial, Helvetica, sans-serif; color: #7fd4ff; opacity: 0; transition: opacity 0.6s; pointer-events: none; }
+#chatbox.active { opacity: 1; }
+#chatbox p { margin: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#chatbox b { color: #f1e5c6; font-weight: 600; }
+@media(max-width:700px) { #chatbox { display: none; } }
+/* boards in metal tiers */
+.tier-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; margin: 12px 0 4px; }
+.tier-picker button.tier { display: grid; gap: 2px; text-align: left; padding: 7px 9px; border-left: 6px solid var(--metal); background: linear-gradient(90deg, color-mix(in srgb, var(--metal) 26%, #1c3a2f), #17352b); }
+.tier-picker button.tier b { font-size: 12px; color: #f1e5c6; }
+.tier-picker button.tier span { font: 10px system-ui, sans-serif; opacity: 0.85; }
+.tier-picker button.tier i { font: italic 10px system-ui, sans-serif; color: #c9d8b8; }
+.tier-picker button.tier.selected { outline: 2px solid #f1d58e; }
+.tier-picker button.tier.missing { filter: grayscale(0.85) brightness(0.75); }
+/* pets */
+.pet-picker { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.pet-picker button.pet { padding: 5px 9px; font-size: 11px; }
+.pet-picker button.pet.selected { outline: 2px solid #f1d58e; }
+/* races: the clock card and the 3-2-1 */
+#race-card { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); display: grid; justify-items: center; gap: 2px; min-width: 220px; padding: 8px 16px; background: #133126ee; border: 1px solid #d4b674; border-radius: 6px; font: 12px system-ui, sans-serif; color: #d5dbc7; }
+#race-card strong { font: 700 26px Georgia, serif; color: #ffd76a; letter-spacing: 0.04em; }
+#race-card .medals { display: flex; gap: 6px; align-items: center; }
+#race-card .medals i { font-style: normal; font-weight: 700; padding: 0 5px; border-radius: 3px; color: #1a1a1a; }
+#race-card .medals .gold { background: #e9c24a; } #race-card .medals .silver { background: #c9ced2; } #race-card .medals .bronze { background: #c08350; }
+#race-card .ghost { font-weight: 700; } #race-card .ghost.ahead { color: #ff8a7a; } #race-card .ghost.behind { color: #8df08d; }
+#race-countdown { position: absolute; top: 34%; left: 50%; transform: translate(-50%, -50%); font: 700 96px Georgia, serif; color: #ffd76a; text-shadow: 0 4px 18px #000c; pointer-events: none; }

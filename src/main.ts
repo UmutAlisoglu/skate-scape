@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { loadBytes, loadJson, loadSoup, type WorldManifest } from './world/load.ts';
+import { loadBytes, loadJson, type WorldManifest } from './world/load.ts';
 import { loadSurfaces, rsMaterial, rsUniforms } from './world/rs-material.ts';
 import { createSky } from './world/sky.ts';
 import { CollisionStream, WorldCollision } from './world/collision.ts';
@@ -10,7 +10,7 @@ import { GRAB_LIFT } from './player/skate-rig.ts';
 import { damp, dampAngle } from './shared/motion.ts';
 import type { AnimData, Wardrobe } from './shared/player-data.ts';
 import { GameInput } from './game/input.ts';
-import { Skater, type Rail } from './game/skater.ts';
+import { Skater } from './game/skater.ts';
 import { Skateboard } from './game/board.ts';
 import { ChaseCamera } from './game/camera.ts';
 import { trainingGrounds } from './game/park.ts';
@@ -27,11 +27,24 @@ import { PROP_KINDS, PropManager } from './game/props.ts';
 import { ChallengeTracker, challengesFor } from './game/challenges.ts';
 import { Replay } from './game/replay.ts';
 import { DECKS } from './game/decks.ts';
+import { Fireworks } from './game/fireworks.ts';
+import { RuneTokens, RUNE_KINDS, type TownRune } from './game/runes.ts';
+import { HintCoach } from './game/hints.ts';
+import { abilitiesFor } from './game/skill.ts';
+import { ChatLayer } from './game/chatter.ts';
+import { Crowd } from './game/crowd.ts';
+import { RandomEvents } from './game/events.ts';
+import { BOARD_TIERS, withBoard } from './game/boards.ts';
+import { PETS, PetFollower } from './game/pets.ts';
+import { RaceManager } from './game/races.ts';
+import { GhostRider, loadGhost, saveGhost } from './game/ghost.ts';
+import { Landmarks, MEGA, type BuiltCatapult } from './game/landmarks.ts';
+import { loadNpcs } from './player/npc-actor.ts';
 import './style.css';
 
-const requestedArea = new URLSearchParams(location.search).get('area') ?? 'misthalin';
-const AREA = /^[a-z0-9_-]+$/i.test(requestedArea) ? requestedArea : 'misthalin';
-const AREA_NAMES: Record<string, string> = { misthalin: 'Misthalin', lumbridge: 'Lumbridge' };
+const requestedArea = new URLSearchParams(location.search).get('area') ?? 'gielinor';
+const AREA = /^[a-z0-9_-]+$/i.test(requestedArea) ? requestedArea : 'gielinor';
+const AREA_NAMES: Record<string, string> = { gielinor: 'Gielinor', misthalin: 'Misthalin', lumbridge: 'Lumbridge' };
 const loading = document.getElementById('hud')!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 const requestedRatio=Number(new URLSearchParams(location.search).get('dpr'));
@@ -51,16 +64,17 @@ async function main() {
   const base = `${import.meta.env.BASE_URL}world/${AREA}`, playerBase = `${import.meta.env.BASE_URL}player`;
   const manifest = await loadJson<WorldManifest>(`${base}/manifest.json`);
   loading.textContent = `Opening ${manifest.name}…`;
-  const [terrain, wardrobe, anims, surfaces, traversal, rails] = await Promise.all([
-    loadSoup(`${base}/terrain.bin`, { positionsOnly: true }),
+  if (manifest.format !== 2) throw new Error('This map was exported in an older format. Run npm run export:world.');
+  const [wardrobe, anims, surfaces, traversal, runeSpots, npcs] = await Promise.all([
     loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), loadSurfaces(`${import.meta.env.BASE_URL}surfaces`),
     loadBytes(`${base}/traversal.bin`),
-    loadJson<Rail[]>(`${base}/rails.json`),
+    loadJson<{ id: string; place: string; kind: number; position: [number, number, number] }[]>(`${base}/runes.json`),
+    loadNpcs(`${import.meta.env.BASE_URL}npcs/npcs.json`),
   ]);
   loading.textContent = 'Preparing the streets and training grounds…';
   const park = trainingGrounds(scene, surfaces);
-  // terrain and the training park are always solid; object collision streams in cells around the rider
-  const collision = new WorldCollision([terrain.opaque, park.collisionGeometry]); collision.rails = [...rails,...park.rails];
+  // the training park is always solid; the map's terrain, objects and grind lines stream in cells around the rider
+  const collision = new WorldCollision([park.collisionGeometry]); collision.rails = [...park.rails];
   collision.setTraversal(manifest.sizeTiles[0],manifest.sizeTiles[1],traversal);
   const stream = await CollisionStream.load(base, collision);
   /** Ground under a map point once its collision is loaded: the floor nearest the terrain, not a roof. */
@@ -72,8 +86,20 @@ async function main() {
   const [sx, sy] = manifest.spawn;
   const home = await groundPoint(sx + 0.5, -(sy + 0.5));
   const places = placesIn(manifest.baseTile, manifest.sizeTiles), areaName = AREA_NAMES[AREA] ?? manifest.name;
+  /** A world tile on this map, as a local position (null off the map). */
+  const localTile = ([tx, ty]: [number, number]) => { const x = tx - manifest.baseTile[0], y = ty - manifest.baseTile[1]; return x >= 0 && y >= 0 && x < manifest.sizeTiles[0] && y < manifest.sizeTiles[1] ? new THREE.Vector3(x + 0.5, 0, -(y + 0.5)) : null; };
+  // races: RS agility courses and downhill bombs, with the ghost of your best run
+  const races = new RaceManager(scene, localTile, (x, z) => { const t = collision.groundAt(x, z, 25, true); return t === null ? null : collision.groundAt(x, z, t + 1.2) ?? t; });
+  const raceSpots = races.available.map((race) => ({ id: `race-${race.id}`, name: race.name, spell: race.name, tile: race.checkpoints[0], blurb: race.blurb, region: 'Races', ...localTile(race.checkpoints[0])!, y: undefined }));
+  // mega ramps and catapults (before quick drop, so dropped props keep their grind lines and quarter pipes)
+  const landmarks = new Landmarks(scene, collision, surfaces, localTile);
+  let catapultFlight = false, catapultLoad: { c: BuiltCatapult; name: string; target: THREE.Vector3 | null; wind: number } | null = null;
+  const aimAt = (to: string) => { const place = places.find((p) => p.id === to); return place ? new THREE.Vector3(place.x, 0, place.z) : null; };
+  landmarks.update(0, aimAt);
+  const landmarkSpots = landmarks.spots(places).map((spot) => ({ ...spot, spell: spot.name, tile: [0, 0] as [number, number], region: 'Landmarks', y: undefined }));
+  const ghostKey = (id: string) => `scape-skate-ghost-${id}${new URLSearchParams(location.search).has('test') ? '-test' : ''}`;
   loading.textContent='Opening nearby streets…';
-  const worldMaterials={opaque:rsMaterial({surfaces,vertexColors:true}),translucent:rsMaterial({surfaces,vertexColors:true,transparent:true})};
+  const worldMaterials={opaque:rsMaterial({surfaces,vertexColors:true,cutout:true}),translucent:rsMaterial({surfaces,vertexColors:true,transparent:true,cutout:true})};
   const world=await RenderWorld.load(`${base}/render`,worldMaterials,surfaces.lookup);scene.add(world.group);await world.preload(home,48);
   const avatar = new Avatar(wardrobe, anims, surfaces); let look = avatar.defaultLook(false);
   look.colors = [1, 4, 2, 1, 0]; avatar.setLook(look); avatar.play('Idle'); scene.add(avatar.mesh);
@@ -85,6 +111,17 @@ async function main() {
   // special attack effects, one emitter per special
   const specialFx = { rune: new GrindSparks(RUNE_COLORS, 10, 1.8), teleport: new GrindSparks(SURGE_COLORS, 12, 2.2), dragon: new GrindSparks(FIRE_COLORS, 13, 2), godsword: new GrindSparks(GOLD_COLORS, 10, 1.2) };
   for (const fx of Object.values(specialFx)) scene.add(fx.points);
+  // RS level-up fireworks for challenges and levels, and a little camera shake on bonks and slams
+  const fireworks = new Fireworks(); scene.add(fireworks.points); let shake = 0;
+  // Agility leaps and wallplants leave a short trail of RS-green agility sparks
+  const leapTrail = new GrindSparks({ hot: new THREE.Color(0.85, 1, 0.6), cool: new THREE.Color(0.2, 0.7, 0.15) }, 12, 2.2); scene.add(leapTrail.points); let leapGlow = 0;
+  const hints = new HintCoach(collision); let abilityLevel = -1, ridingBoard = '';
+  // dragon boards trail fire, third-age ones sparkle
+  const boardTrails = { fire: new GrindSparks(FIRE_COLORS, 9, 1.6), sparkle: new GrindSparks(GOLD_COLORS, 9, 1.3) };
+  for (const trail of Object.values(boardTrails)) scene.add(trail.points);
+  // other players out skating, with RS public chat over their heads and in the chatbox
+  const chat = new ChatLayer(), crowd = new Crowd(scene, collision, wardrobe, anims, surfaces, chat);
+  const pet = new PetFollower(scene, collision, npcs, surfaces, chat);
   const animator=new SkateAnimator(),renderPosition=home.clone(),renderTarget=new THREE.Vector3();
   let renderHeading=0,renderPitch=0,renderTilt=0,grindOffset=0,renderRoll=0,renderSlide=0,grindYaw=0,grindPitch=0,grindRoll=0,grabLift=0;
   const wallOffset=new THREE.Vector3(),wallTarget=new THREE.Vector3(),deckUp=new THREE.Vector3();
@@ -93,8 +130,24 @@ async function main() {
   // skate.-style replay of the last 20 seconds of skating (Backspace, or the pause menu)
   const replay = new Replay();
   const career = new Career(localStorage, new URLSearchParams(location.search).has('test') ? 'scape-skate-test' : 'scape-skate-career'); let skating = true; let busy = false; let ui: GameUI;
+  // five RS runes hidden above grind lines in every town (THPS letters)
+  const townRunes: TownRune[] = runeSpots.map((r) => ({ ...r, position: new THREE.Vector3(...r.position) }));
+  const runes = new RuneTokens(scene, townRunes, (id) => career.profile.townRunes.includes(id));
   board.setDesign(DECKS[career.profile.board] ?? DECKS[0]);
-  const relocate = (position: { x: number; y: number; z: number }, message = position === park.spawn ? 'Training grounds · collect the five runes' : `${areaName} · roll out and find a line`) => { skater.message = message; skating = true; busy = false; avatar.setSkatePose(null); skater.reset(position, 0); player.position.set(position.x, position.y, position.z);renderPosition.copy(player.position);renderHeading=renderPitch=renderTilt=grindOffset=renderRoll=renderSlide=grindYaw=grindPitch=grindRoll=0;wallOffset.set(0,0,0);animator.reset();board.root.visible = true; chase.snap(position,0); };
+  // RS random events (Evil Chicken, Genie, Sandwich Lady...) every few minutes of skating
+  const randomEvents = new RandomEvents(scene, collision, npcs, surfaces, chat, {
+    reward: (xp, text) => { const before = career.level; career.award(xp); career.toast = `${text} · +${xp.toLocaleString('en-GB')} XP${career.level > before ? ` · Skateboarding level ${career.level}!` : ''}`; career.toastTime = 4; career.cheer ??= 'challenge'; },
+    toast: (text) => { career.toast = text; career.toastTime = 4; },
+    level: () => career.level,
+    success: (kind) => { if (kind === 'evilchicken') career.grantPet('chicken', 'Chicken', 'A little chicken followed the Evil Chicken home'); },
+    mysteryBox: () => {
+      const board = BOARD_TIERS.filter((t) => t.combo <= 40000 && !career.profile.boards.includes(t.id))[0];
+      if (board && Math.random() < 0.5) { career.grantBoard(board.id, 'A board in the box'); return `a ${board.name}!`; }
+      if (!career.profile.pets.includes('cat') && Math.random() < 0.35) { career.grantPet('cat', 'Cat', 'A cat jumps out of the box'); return 'a cat!'; }
+      const xp = career.level * 250; career.award(xp); return `${xp.toLocaleString('en-GB')} Skateboarding XP`;
+    },
+  });
+  const relocate = (position: { x: number; y: number; z: number }, message = position === park.spawn ? 'Training grounds · collect the five runes' : `${areaName} · roll out and find a line`) => { catapultLoad = null; catapultFlight = false; crowd.clear(); randomEvents.end(); races.cancel(); ghost.show(null); pet.snap(new THREE.Vector3(position.x, position.y, position.z)); skater.message = message; skating = true; busy = false; avatar.setSkatePose(null); skater.reset(position, 0); player.position.set(position.x, position.y, position.z);renderPosition.copy(player.position);renderHeading=renderPitch=renderTilt=grindOffset=renderRoll=renderSlide=grindYaw=grindPitch=grindRoll=0;wallOffset.set(0,0,0);animator.reset();board.root.visible = true; chase.snap(position,0); };
   /** RS teleport: the spell animation plays while the destination's streets and collision load. */
   let focus: THREE.Vector3 | null = null;
   const teleport = (to: () => Promise<THREE.Vector3>, message?: string) => {
@@ -111,7 +164,8 @@ async function main() {
     start: (mode, training) => { career.start(mode); skater.totalScore = 0; skater.drainEvents(); relocate(training ? park.spawn : home); },
     practice: () => relocate(park.spawn), board: (index) => board.setDesign(DECKS[index] ?? DECKS[0]), pause: () => keys.clear(), teleport: teleportTo,
     replay: () => { if (skating && replay.begin()) chase.follow = true; },
-  }, places, areaName);
+  }, [...places, ...raceSpots, ...landmarkSpots], areaName);
+  const ghost = new GhostRider(scene, wardrobe, anims, surfaces); let ghostPosition: THREE.Vector3 | null = null;
   // skate.-style session marker: Z drops it where you are (with your speed and direction), X takes you back
   const marker = new SessionMarker(scene);
   const mapImage = await loadMapImage(base), minimap = mapImage ? new Minimap(mapImage, places, teleportTo) : null;
@@ -122,7 +176,8 @@ async function main() {
   let drop: { kind: number; distance: number; side: number; turn: number; note: string; noteTime: number } | null = null;
   const boardBasis = new THREE.Matrix4(), surfaceUp = new THREE.Vector3(), surfaceNose = new THREE.Vector3(), surfaceSide = new THREE.Vector3(), riderTurn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
   loading.hidden = true; performance.mark('scape-ready');
-  if (new URLSearchParams(location.search).has('test')) Object.assign(window, { __scape: { avatar, skater, board, camera, chase, scene, world, collision, stream, places, teleportTo, marker, props } });
+  const testing = new URLSearchParams(location.search).has('test');
+  if (testing) Object.assign(window, { __scape: { avatar, skater, board, camera, chase, scene, world, collision, stream, places, teleportTo, marker, props, runes, career, hints, crowd, chat, randomEvents, pet, races, ghost, landmarks } });
   document.addEventListener('visibilitychange', () => { if (document.hidden) ui.pause(); }); addEventListener('beforeunload', () => career.save());
   for (const token of park.tokens) if (career.profile.runes.includes(token.id)) { token.collected = true; token.mesh.visible = false; }
   const shadowCanvas = document.createElement('canvas'); shadowCanvas.width = shadowCanvas.height = 64;
@@ -131,7 +186,9 @@ async function main() {
   const emotes = ['Jig','Headbang','Spin','Zombie dance','Dance','Cheer','Jump for joy','Air guitar','Rabbit hop','Glass box'].filter((n) => avatar.seqNames().includes(n));
   const forward = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
   let previousTime = performance.now(), hudTime = 0;
-  renderer.setAnimationLoop((time) => {
+  /** world geometry between the camera and the rider turns see-through (the RS shader's cutout) */
+  const aimCutout = () => { rsUniforms.cutCamera.value.copy(camera.position); rsUniforms.cutTarget.value.set(player.position.x, player.position.y + 1, player.position.z); rsUniforms.cutRadius.value = 1.1; };
+  const frame = (time: number) => {
     const frameStart = performance.now(); let physicsMs = 0, animationMs = 0;
     const dt = Math.min(Math.max((time - previousTime) / 1000, 0), 0.1); previousTime = time;
     const gamepad = pad.read();
@@ -148,7 +205,7 @@ async function main() {
         else if (frame.sequence) avatar.showSequence(frame.sequence, frame.sequenceTime);
         chase.update(player.position, renderHeading, 0, false, dt, collision);
         world.update(player.position, time); stream.update(player.position);
-        renderer.render(scene, camera); chase.restore();
+        aimCutout(); renderer.render(scene, camera); chase.restore();
         ui.setReplay({ at: replay.cursor - replay.start, length: replay.length, speed: replay.speed, playing: replay.playing, tricks: frame.tricks, combo: frame.combo });
         return;
       }
@@ -177,6 +234,39 @@ async function main() {
         skater.heading = renderHeading = saved.heading; skater.speed = saved.speed; chase.snap(saved.position, saved.heading);
       }
       if (!drop && skating && !busy && keys.takePress('Backspace')) { if (!replay.begin()) skater.message = 'Skate a little first · the replay keeps your last 20 seconds'; }
+      // races: Enter in a start ring begins one (the countdown holds the rider on the line)
+      const startable = !drop && skating && !busy ? races.startAt(player.position) : null;
+      if (startable && keys.takePress('Enter')) {
+        races.begin(startable); crowd.clear(); randomEvents.end();
+        ghost.setLook(look); ghost.show(loadGhost(ghostKey(startable.id)));
+        const start = races.startOf(startable); chase.snap(start.position, start.heading);
+      }
+      if (races.running && races.running.countdown > 0) { const start = races.startOf(races.running.race); skater.reset(start.position, start.heading); }
+      // mega ramps: Enter at the ladder climbs the tower; on the ramps you go faster than anywhere else
+      const ladder = !drop && skating && !busy && !startable ? landmarks.ladderAt(player.position) : null;
+      if (ladder && keys.takePress('Enter')) {
+        const top = landmarks.towerTop(ladder); relocate(top.position, `You climb to the top of the ${ladder.site.name} · push off and drop in!`);
+        skater.heading = renderHeading = top.heading; chase.snap(top.position, top.heading);
+      }
+      const mega = landmarks.megaAt(skater.position); skater.boostCap = mega ? MEGA.boostCap : 0; skater.slopeBoost = mega ? MEGA.slopeBoost : 1;
+      // catapults: roll onto the pad and the arm winds back while the destination's ground loads (streaming
+      // follows the destination from then until you land), then you're lobbed across the map
+      const catapult = !catapultLoad && !catapultFlight && skating && !busy && !drop && skater.grounded && skater.bailTime === 0 ? landmarks.catapultAt(skater.position) : null;
+      const destination = catapult ? places.find((place) => place.id === catapult.site.to) : null;
+      if (catapult && destination) {
+        const load = { c: catapult, name: destination.name, target: null as THREE.Vector3 | null, wind: 0 };
+        catapultLoad = load; landmarks.windUp(catapult); focus = new THREE.Vector3(destination.x, 0, destination.z);
+        void groundPoint(destination.x, destination.z).then((target) => { load.target = target; return world.preload(target, 40, true); }).catch((error) => console.error('Catapult target failed', error));
+        skater.message = `The catapult winds up · next stop ${destination.name}`;
+      }
+      if (catapultLoad) {
+        const load = catapultLoad; skater.reset(load.c.pad, load.c.group.rotation.y); load.wind += dt;
+        if (load.wind > 1.2 && load.target) {
+          const v = landmarks.fire(load.c, load.target); catapultLoad = null; catapultFlight = true;
+          skater.launch(v.vx, v.vy, v.vz, ['Catapult', 1500]); skater.message = `Catapulted to ${load.name}!`; audio.fanfare('challenge');
+        }
+      }
+      if (catapultFlight && !skater.soaring) { catapultFlight = false; focus = null; world.unpin(); }
       if (keys.takePress('KeyB') && skating && !busy) {
         if (drop) { drop = null; props.preview(null); skater.message = `Quick drop closed · ${props.props.length} obstacle${props.props.length === 1 ? '' : 's'} placed`; }
         else if (skater.grounded && !skater.transition && !skater.grinding && !skater.bailTime) { drop = { kind: 0, distance: 4.5, side: 0, turn: 0, note: '', noteTime: 0 }; skater.speed = 0; }
@@ -205,11 +295,19 @@ async function main() {
       // runs every frame so sparks keep fading after a grind, a dismount or a teleport
       sparks.update(dt,skating&&!busy&&skater.grinding?renderPosition:null,-Math.sin(skater.travelHeading),-Math.cos(skater.travelHeading),skater.speed);
       surgeTrail.update(dt,skating&&!busy&&skater.surgeTime<0.45?renderPosition:null,-Math.sin(skater.travelHeading),-Math.cos(skater.travelHeading),skater.speed);
+      leapGlow = Math.max(0, leapGlow - dt); leapTrail.update(dt, skating && !busy && leapGlow > 0 ? renderPosition : null, -Math.sin(skater.travelHeading), -Math.cos(skater.travelHeading), skater.speed);
+      for (const [effect, trail] of Object.entries(boardTrails)) trail.update(dt, skating && !busy && skater.bailTime === 0 && skater.speed > 3 && career.board.effect === effect ? renderPosition : null, -Math.sin(skater.travelHeading), -Math.cos(skater.travelHeading), skater.speed);
       const specialKind = !skating || busy ? null : skater.trick && skater.trick.elapsed < skater.trick.duration ? skater.trick.special : skater.grab?.special ?? (skater.grindStyle?.special ? 'godsword' : null);
       for (const [kind, fx] of Object.entries(specialFx)) fx.update(dt, kind === specialKind ? board.root.position : null, -Math.sin(skater.travelHeading), -Math.cos(skater.travelHeading), skater.speed);
       // Teleport shove: the board blinks out mid-spin and reappears under the feet
       const teleporting = skater.trick?.special === 'teleport' && skater.trick.elapsed / skater.trick.duration > 0.2 && skater.trick.elapsed / skater.trick.duration < 0.8;
       board.root.visible = skating && !teleporting;
+      // Skateboarding levels unlock abilities (skill.ts): wallplant, Agility leap, bigger pops...
+      if (career.level !== abilityLevel || career.board.id !== ridingBoard) {
+        abilityLevel = career.level; ridingBoard = career.board.id;
+        for (const def of PETS) if (def.level && career.level >= def.level && !career.profile.pets.includes(def.id)) career.grantPet(def.id, def.name, `Skateboarding level ${def.level}`);
+        skater.abilities = withBoard(abilitiesFor(abilityLevel), career.board); board.setTier(career.board);
+      }
       if (skating && !busy) {
         const physicsStart = performance.now();
         // Shift / RB: wider grind catch while held in the air, a revert when tapped on the ground
@@ -290,6 +388,16 @@ async function main() {
         } else avatar.play('Idle');
       }
       avatar.update(dt);
+      if (!busy) { crowd.update(dt, player.position); randomEvents.update(dt, skater, skating && !drop && !replay.active && !races.running); }
+      if (skating && !busy) {
+        const state = races.update(dt, skater, { player, board: board.root, deck: board.deckAngles, pose: avatar.skatePose });
+        if (state === 'finished') {
+          const result = races.finish(); ghost.show(null);
+          if (career.finishRace(result.race.id, result.race.name, result.time, result.medal)) saveGhost(ghostKey(result.race.id), result.run);
+        } else if (races.running && ghost.active) ghostPosition = ghost.update(races.running.time);
+        if (races.running && races.nextCheckpoint && Math.hypot(races.nextCheckpoint.x - player.position.x, races.nextCheckpoint.z - player.position.z) > 150) { races.cancel(); ghost.show(null); skater.message = 'Race abandoned · too far from the course'; }
+      }
+      pet.setPet(career.profile.pet, player.position); if (!busy) pet.update(dt, skater, player.position, skating);
       // spots only count on the map (the training grounds sit just off its west edge, near Draynor's coordinates)
       const onMap = player.position.x >= 0 && player.position.z <= 0;
       const nearest = !onMap ? null : places.reduce<LocalPlace | null>((best, place) => {
@@ -300,11 +408,17 @@ async function main() {
       const open = spot ? challengesFor(spot.id).filter((c) => !career.profile.challenges.includes(c.id)) : [];
       if (spot && skating && !busy) for (const challenge of tracker.update(skater, dt, open)) career.completeChallenge(challenge, spot.name);
       for (const event of skater.drainEvents()) {
-        career.event(event); audio.cue(event);
+        career.event(event); audio.cue(event); crowd.react(event, player.position); randomEvents.notice(event); pet.react(event);
+        if (event.type === 'bonk') shake = Math.max(shake, 0.3); else if (event.type === 'bail') shake = Math.max(shake, 0.7); else if (event.type === 'sketchy') shake = Math.max(shake, 0.15);
+        if (event.type === 'leap' || (event.type === 'trick' && event.names[0] === 'Wallplant')) leapGlow = 0.35;
         if (spot) for (const challenge of tracker.event(event, open)) career.completeChallenge(challenge, spot.name);
       }
-      ui.setSpot(spot?.name ?? null, spot ? challengesFor(spot.id) : [], tracker.best);
-      if (career.cheer) { audio.fanfare(career.cheer); career.cheer = null; }
+      ui.setSpot(spot?.name ?? null, spot ? challengesFor(spot.id) : [], tracker.best, spot ? { found: runes.runes.filter((r) => r.place === spot!.id && career.profile.townRunes.includes(r.id)).length, total: runes.runes.filter((r) => r.place === spot!.id).length } : null);
+      if (skating) for (const rune of runes.update(time, player.position)) {
+        const town = runes.runes.filter((r) => r.place === rune.place), place = places.find((p) => p.id === rune.place);
+        career.collectTownRune(rune.id, RUNE_KINDS[rune.kind].name, place?.name ?? rune.place, town.filter((r) => career.profile.townRunes.includes(r.id)).length + 1, town.length);
+      }
+      if (career.cheer) { audio.fanfare(career.cheer); fireworks.burst(player.position, career.cheer); career.cheer = null; }
       career.tick(dt, skater);
       for (const token of park.tokens) if (!token.collected) {
         token.mesh.rotation.y += dt*1.4; token.mesh.position.y = token.position.y + Math.sin(time/700)*0.08;
@@ -316,19 +430,38 @@ async function main() {
     chase.update(player.position, skater.cameraHeading, skating ? skater.speed : 0, skating, dt, collision);
     const ground = collision.groundAt(player.position.x,player.position.z,player.position.y+0.1);
     shadow.visible = ground !== null; if (ground !== null) { shadow.position.set(player.position.x,ground+0.015,player.position.z); shadow.scale.setScalar(Math.max(0.5,1-(player.position.y-ground)*0.15)); }
+    if (shake > 0) { camera.position.x += (Math.random() - 0.5) * shake * 0.25; camera.position.y += (Math.random() - 0.5) * shake * 0.25; shake = Math.max(0, shake - dt * 2.5); }
+    hints.enabled = career.profile.hints;
+    const free = !ui.paused && skating && !busy && !drop && !races.running;
+    const raceHere = free ? races.startAt(player.position) : null, ladderHere = free && !raceHere ? landmarks.ladderAt(player.position) : null;
+    const catapultHere = free && !ladderHere && !catapultFlight ? landmarks.catapultNear(player.position) : null, flyTo = catapultHere ? places.find((p) => p.id === catapultHere.site.to)?.name : null;
+    const hint = raceHere ? { id: 'race', parts: ['Press ', { key: 'Enter' }, ` to start the ${raceHere.name}`] } : ladderHere ? { id: 'ladder', parts: ['Press ', { key: 'Enter' }, ` to climb the ${ladderHere.site.name}`] }
+      : flyTo ? { id: 'catapult', parts: [`Roll onto the catapult's pad to fly to ${flyTo}`] } : skating && !busy && !drop && !ui.paused ? hints.update(dt, skater) : null;
+    chat.hidden = ui.paused; chat.update(dt, camera);
+    fireworks.update(dt); landmarks.update(dt, aimAt);
     world.update(player.position,time); stream.update(focus ?? player.position); marker.update(time);
     const renderStart = performance.now();
-    renderer.render(scene,camera);
+    aimCutout(); renderer.render(scene,camera);
     const renderMs = performance.now()-renderStart; chase.restore();
     hudTime += dt; if (hudTime > 0.05) {
-      hudTime = 0; ui.update(skater,skating);
+      hudTime = 0; ui.update(skater,skating); ui.setHint(hint);
+      const run = races.running, ghostAt = run && ghost.active ? ghostPosition : null, next = races.nextCheckpoint;
+      ui.setRace(run ? { name: run.race.name, time: run.time, checkpoint: run.next, total: run.race.checkpoints.length - 1, best: career.profile.raceBest[run.race.id], medals: run.race.medals, countdown: run.countdown,
+        ghost: ghostAt && next ? Math.hypot(next.x - ghostAt.x, next.z - ghostAt.z) - Math.hypot(next.x - player.position.x, next.z - player.position.z) : undefined } : null);
       if (minimap) {
         camera.getWorldDirection(forward);
         const markers: MapMarker[] = marker.position ? [{ ...marker.position, kind: 'marker' }] : [];
+        for (const rune of runes.runes) if (!career.profile.townRunes.includes(rune.id)) markers.push({ x: rune.position.x, z: rune.position.z, kind: 'rune' });
+        for (const spot of raceSpots) markers.push({ x: spot.x, z: spot.z, kind: 'spot' });
+        for (const r of landmarks.ramps) markers.push({ x: r.group.position.x, z: r.group.position.z, kind: 'done' });
+        for (const c of landmarks.catapults) markers.push({ x: c.group.position.x, z: c.group.position.z, kind: 'marker' });
         minimap.update(player.position.x, player.position.z, skating ? skater.travelHeading : player.rotation.y - Math.PI, -Math.atan2(forward.x, -forward.z), markers);
       }
     }
     monitor.sample(time,{physics:physicsMs,animation:animationMs,render:renderMs,total:performance.now()-frameStart},{paused:ui.paused,area:player.position.x<0?'training':'lumbridge',...world.stats});
-  });
+  };
+  renderer.setAnimationLoop(frame);
+  // tests drive frames by hand (the desktop preview throttles animation frames while it's hidden)
+  if (testing) Object.assign((window as unknown as { __scape: object }).__scape, { frames: async (count: number, step = 1000 / 60) => { for (let i = 0; i < count; i++) { frame(previousTime + step); if (i % 15 === 14) await new Promise((r) => setTimeout(r)); } } });
 }
 main().catch((error) => { loading.textContent = `Could not open the game: ${error}`; console.error(error); });

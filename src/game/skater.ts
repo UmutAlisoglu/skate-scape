@@ -4,7 +4,8 @@ import { FLIP_TRICKS, GRAB_TRICKS, SHOVE_TRICKS, SPECIAL, SPECIAL_FLIP, SPECIAL_
 export interface Point { x: number; y: number; z: number }
 export interface Rail { id: string; name: string; a: Point; b: Point; width?: number }
 export interface SkateWorld {
-  groundAt(x: number, z: number, fromY: number): number | null;
+  /** highest walkable surface below fromY (terrainOnly: the terrain alone, null over holes in it) */
+  groundAt(x: number, z: number, fromY: number, terrainOnly?: boolean): number | null;
   move(from: Point, delta: Point): Point & { blocked: boolean; normal?: Point };
   rails?: Rail[];
   /** quarter pipes (analytic riding faces, see transition.ts) */
@@ -12,7 +13,30 @@ export interface SkateWorld {
   /** spatial lookup for big worlds; falls back to scanning `rails` */
   railsNear?(x: number, z: number, radius: number): Rail[];
   canRideAt?(x: number, z: number, y: number): boolean;
+  /** false beyond the edge of the map (where there is nothing to ride): an invisible wall, in the air too */
+  inBounds?(x: number, z: number): boolean;
 }
+/** What the rider has unlocked with Skateboarding levels (see UNLOCKS in skill.ts). */
+export interface SkateAbilities {
+  /** ollie, wallplant and leap vertical speed multiplier */
+  pop: number;
+  /** Space in the air beside a wall kicks you up and off it */
+  wallplant: boolean;
+  /** Agility leaps (a second pop in the air) per air */
+  leaps: number;
+  /** balance wobble multiplier on grinds and manuals */
+  steady: number;
+  surgeCooldown: number;
+  /** no heavy-landing bails from any height */
+  ironKnees: boolean;
+  /** special bar fill multiplier */
+  specialFill: number;
+  /** Surge in the air also lifts you */
+  airSurge: boolean;
+  /** push speed and top speed added (m/s): better boards */
+  push: number;
+}
+export const BASE_ABILITIES: SkateAbilities = { pop: 1, wallplant: false, leaps: 0, steady: 1, surgeCooldown: 8, ironKnees: false, specialFill: 1, airSurge: false, push: 0 };
 export interface SkateInput {
   push: boolean; brake: boolean; steer: number; crouch: boolean; pop: boolean; flip: boolean; shove: boolean;
   manual?: boolean; grind?: boolean;
@@ -24,23 +48,36 @@ export interface SkateInput {
   surge?: boolean;
 }
 type Trick = { name: string; duration: number; elapsed: number; kind: 'flip' | 'shove'; spin: Spin; special?: SpecialKind };
-export type SkateEvent = { type: 'land' | 'bail' | 'trick' | 'grind' | 'slide' | 'surge'; score: number; names: string[]; combo: number };
+export type SkateEvent = { type: 'land' | 'bail' | 'trick' | 'grind' | 'slide' | 'surge' | 'bonk' | 'sketchy' | 'leap' | 'special'; score: number; names: string[]; combo: number; sketchy?: boolean };
 const FIXED_DT = 1 / 120;
-/** After a landing the combo stays open this long, so a revert or manual can still link into it (THPS 3+4). */
-export const LANDING_WINDOW = 0.3;
+/** After a landing the combo stays open this long, so an ollie, revert, manual or powerslide links into it. */
+export const LANDING_WINDOW = 0.6;
+/** Repeating a trick in one combo scores less each time (THPS): -25% per repeat, never below a quarter. */
+export const REPEAT = { step: 0.25, floor: 0.25 };
+/** Ollie vertical speed (m/s): uncharged, plus this much more with a full crouch; times the rider's pop. */
+export const OLLIE = { base: 4.3, charged: 3.1 };
+/** Air moves (vertical speed, m/s): wallplant off a wall, Agility leap; leaps need this much height when falling. */
+export const AIR_MOVES = { wallplant: 6.4, leap: 6.2, leapMinHeight: 0.6, plantCooldown: 0.35 };
+/** Landings: fall speed (m/s) that bails, how far a flip must be done to finish itself, and what a sketchy
+ * landing keeps of the combo. */
+export const LANDING = { heavy: 17, flipFinish: 0.5, sketchy: 0.5 };
 /** Grind catch zone around a rail line, in meters (see tryGrind). */
 /** Wallride tuning: entry needs speed and height; faster entries ride longer. A wall touched within `memory`
  * seconds still catches if you leave the ground beside it (scrape the wall, ollie, ride it). */
 export const WALLRIDE = { minSpeed: 3, minHeight: 0.3, maxAngle: 50, gravity: 4, minTime: 0.6, maxTime: 2.2, cooldown: 0.4, memory: 0.5, lift: 1.4, maxLift: 2.4 };
-export const GRIND_CATCH = { reach: 0.45, assistedReach: 0.8, below: 0.3, above: 0.5, assistedAbove: 0.7, maxRise: 2, endSlack: 0.15 };
+export const GRIND_CATCH = { reach: 0.6, assistedReach: 0.95, below: 0.35, above: 0.6, assistedAbove: 0.8, maxRise: 2.5, endSlack: 0.2 };
+/** Wall hits (normal speed, m/s): above `bail` you go down, above `bonk` you lose some speed but keep the combo. */
+export const IMPACT = { bail: 11, bonk: 6.5 };
 /** A bail: how long you are down, the last part spent getting up, and how fast the slide along the ground stops. */
-export const BAIL = { time: 1.6, recover: 0.5, friction: 7 };
+export const BAIL = { time: 1.6, recover: 0.5, friction: 7, rescue: 1.1 };
 /** Automatic gaps: least drop (m) and air time (s) that count. */
 export const GAPS = { drop: 2.5, hang: 1.3 };
 /** Surge: speed added (m/s), the least it leaves you with, and its cooldown (s). */
-export const SURGE = { boost: 5, minimum: 11, cooldown: 8 };
+export const SURGE = { boost: 5, minimum: 11, cooldown: 8, lift: 4.5 };
 /** Rolling physics: gravity along slopes (m/s² per unit sine), pushing tops out at PUSH_SPEED, slopes can carry you to MAX_SPEED. */
-export const ROLL = { slopeGravity: 9.8, pushSpeed: 9, maxSpeed: 13, maxPitch: 0.7, rampRun: 0.6, rampPitch: 0.15,
+export const ROLL = { slopeGravity: 7, friction: 0.42, pushSpeed: 9, maxSpeed: 13, maxPitch: 0.7, rampRun: 0.6, rampPitch: 0.15,
+  /** least vertical speed a ramp lip must give to launch you (hill crests stay on the ground) */
+  minLaunch: 2,
   /** arcade gravity on quarter pipe faces: you carry more speed to the lip than real physics would give */
   rampGravity: 7.5 };
 
@@ -61,6 +98,14 @@ export class Skater {
   private lastPoints = 0;
   /** this air: highest point and whether it crossed water (for the automatic gaps) */
   private airPeak = 0; private overWater = false;
+  /** this air began with a pop (ollie) or a ramp launch; rolling off a ledge doesn't, and steers instead of spinning */
+  private popped = false;
+  /** recent safe spots (one every half second) so a rescue lands a few seconds back, clear of the edge */
+  private safeTrail: Point[] = []; private safeClock = 0; private noteClock = 0; private wetClock = 0;
+  /** unlocked with Skateboarding levels (main.ts sets these from the career) */
+  abilities: SkateAbilities = { ...BASE_ABILITIES };
+  /** Agility leaps used this air, wallplant cooldown, and how often each trick appeared in the open combo */
+  leapsUsed = 0; private plantCooldown = 0; private repeats = new Map<string, number>(); private perchTime = 0;
   noseManual = false;
   /** seconds until Surge can be cast again, and time since the last cast (for its glow) */
   surgeCooldown = 0; surgeTime = 9;
@@ -142,8 +187,31 @@ export class Skater {
     this.landWindow = this.revertCooldown = this.wallCooldown = 0; this.wallride = null; this.wallTouch = null;
     this.powerslide = this.rampRun = this.inclineBehind = 0;
     this.grab = null; this.grindStyle = null; this.noseManual = false; this.brakeLatch = false;
-    this.transition = null; this.airRamp = null;
+    this.transition = null; this.airRamp = null; this.leapsUsed = 0; this.plantCooldown = 0; this.soaring = false;
   }
+  /** Agility leaps left in this air. */
+  get leapsLeft() { return Math.max(0, this.abilities.leaps - this.leapsUsed); }
+  /** seconds left to link a trick after the last landing (0 when no combo is waiting) */
+  get linkWindow() { return this.landWindow; }
+  /** A higher top speed while it's set (m/s), and downhill gravity multiplied: mega ramp roll-ins (main.ts sets both inside their zones). */
+  boostCap = 0; slopeBoost = 1;
+  /** flying a long way (catapults, balloon drop-ins): no heavy landings, no hole rescues, no air-time limit until you land */
+  soaring = false;
+  /** Throws the rider into the air with a velocity (m/s; horizontal along its direction): a catapult. */
+  launch(vx: number, vy: number, vz: number, trick?: [string, number]) {
+    if (this.bailTime > 0) return;
+    if (trick) { this.landWindow = 0; this.addTrick(...trick); }
+    this.grinding = null; this.wallride = null; this.transition = null; this.manual = false; this.powerslide = 0;
+    this.grounded = false; this.coyote = 0; this.popped = true; this.soaring = true; this.leapsUsed = 0;
+    this.speed = Math.hypot(vx, vz); this.airHeading = Math.atan2(-vx, -vz); this.heading = this.airHeading - this.stance;
+    this.verticalSpeed = vy; this.airTime = this.spin = 0;
+  }
+  /** Top speed: the board's, or a mega ramp's. */
+  get topSpeed() { return Math.max(ROLL.maxSpeed + this.abilities.push, this.boostCap); }
+  /** Seconds of perfect balance left (no wobble on grinds and manuals): the Sandwich Lady's baguette. */
+  perfectBalance = 0;
+  /** Knocked off the board by something in the world (an Evil Chicken...); the open combo is lost. */
+  knockDown(reason: string) { if (this.bailTime === 0) this.bail(reason); }
 
   update(dt: number, input: SkateInput) {
     if (input.pop) this.popBuffer = 0.16;
@@ -163,12 +231,14 @@ export class Skater {
     this.landingTime = Math.max(0, this.landingTime - dt);
     this.popBuffer = Math.max(0, this.popBuffer - dt);
     this.revertCooldown = Math.max(0, this.revertCooldown - dt);
-    this.wallCooldown = Math.max(0, this.wallCooldown - dt);
+    this.wallCooldown = Math.max(0, this.wallCooldown - dt); this.noteClock -= dt;
     this.surgeCooldown = Math.max(0, this.surgeCooldown - dt); this.surgeTime += dt;
+    this.plantCooldown = Math.max(0, this.plantCooldown - dt); this.perfectBalance = Math.max(0, this.perfectBalance - dt);
     // the special bar fills with every point a combo earns and drains while no combo is open
-    const gained = this.comboPoints - this.lastPoints; this.lastPoints = this.comboPoints;
-    if (gained > 0) this.special = Math.min(1, this.special + gained / SPECIAL.fill);
+    const gained = this.comboPoints - this.lastPoints, wasReady = this.specialReady; this.lastPoints = this.comboPoints;
+    if (gained > 0) this.special = Math.min(1, this.special + (gained / SPECIAL.fill) * this.abilities.specialFill);
     else if (!this.comboCount) this.special = Math.max(0, this.special - SPECIAL.drain * dt);
+    if (this.specialReady && !wasReady) this.events.push({ type: 'special', score: 0, names: [], combo: this.comboCount });
     if (this.pending.surge) this.castSurge();
     if (this.wallTouch && (this.wallTouch.age += dt) > WALLRIDE.memory) this.wallTouch = null;
     if (this.landWindow > 0) {
@@ -193,9 +263,9 @@ export class Skater {
       }
       this.bailTime = Math.max(0, this.bailTime - dt);
       if (this.bailTime === 0) {
-        const target = this.relocate ? this.safe : this.position;
+        const target = this.relocate ? this.safeTrail[0] ?? this.safe : this.position;
         const remaining = this.accumulator;
-        this.reset(target); this.accumulator = remaining; this.immunity = 1.25;
+        this.reset(target); this.accumulator = remaining; this.immunity = 1.25; this.safeTrail = [{ ...target }];
         this.message = 'Back on the board · keep your line';
       }
       return;
@@ -206,44 +276,51 @@ export class Skater {
     if (this.transition) { this.stepTransition(dt, input); return; }
 
     if (this.grounded) {
+      this.leapsUsed = 0;
       this.updatePowerslide(input);
       this.heading += input.steer * (this.manual ? 0.5 : this.powerslide ? 0.9 : 1.5 + Math.min(this.speed, 8) * 0.07) * dt;
       // gravity along the slope (pitch > 0 is uphill along the direction of travel); pushing tops out at
-      // pushSpeed but a hill can carry you faster
+      // pushSpeed but a hill can carry you faster. Pushing fades out up steep banks (gone at ~29°): gravity
+      // wins and you roll back down instead of sticking to the bank's face
       const pushes = input.push && !this.manual && !this.powerslide && this.stumbleTime === 0;
-      let speed = this.speed - ROLL.slopeGravity * Math.sin(this.pitch) * dt;
-      if (pushes && speed < ROLL.pushSpeed) speed = Math.min(ROLL.pushSpeed, speed + 5 * dt); else speed -= 0.55 * dt;
+      const grip = Math.max(0, Math.min(1, (0.5 - this.pitch) / 0.2));
+      let speed = this.speed - ROLL.slopeGravity * Math.sin(this.pitch) * (this.pitch < 0 ? this.slopeBoost : 1) * dt;
+      const pushSpeed = ROLL.pushSpeed + this.abilities.push;
+      if (pushes && speed < pushSpeed) speed = Math.min(pushSpeed, speed + 5 * grip * dt); else speed -= ROLL.friction * dt;
       if (this.powerslide) speed -= 5.5 * dt; else if (input.brake) speed -= 12 * dt;
       if (speed < 0 && this.pitch > 0.12 && !input.brake) {
         // stalled on a bank or ramp: roll back down tail-first
         speed = -speed; this.stance = this.stance ? 0 : Math.PI; this.pitch = -this.pitch; this.rampRun = 0;
-        this.message = 'Rolling back fakie';
       }
-      this.speed = Math.max(0, Math.min(ROLL.maxSpeed, speed));
-      this.pushing = pushes && this.speed < 8.8;
+      this.speed = Math.max(0, Math.min(this.topSpeed, speed));
+      this.pushing = pushes && this.speed < pushSpeed - 0.2;
       if (input.crouch) this.charge = Math.min(1, this.charge + dt / 0.65);
       if (input.manual && this.speed > 1.3 && !input.crouch) {
         if (!this.manual) {
           this.manual = true; this.landWindow = 0; this.balance = 0; this.noseManual = input.push;
           this.addTrick(this.noseManual ? 'Nose manual' : 'Manual', this.noseManual ? 150 : 100);
         }
-        this.balance += (Math.sin(this.animationTime * 3.1) * 0.3 + 0.12 - input.steer * 1.2) * dt;
+        this.balance += ((Math.sin(this.animationTime * 3.1) * 0.24 + 0.09) * this.abilities.steady * (this.perfectBalance > 0 ? 0 : 1) - input.steer * 1.2) * dt;
         this.comboPoints += (this.noseManual ? 85 : 60) * dt;
-        if (Math.abs(this.balance) > 1) { this.stumble('Manual lost · rebalance your weight'); return; }
+        if (Math.abs(this.balance) > 1) { this.sketchy(this.balance > 0 ? 'Manual lost · leaned too far right' : 'Manual lost · leaned too far left'); return; }
       } else if (this.manual) { this.manual = false; this.bank(); }
       if (this.pending.revert && !this.manual && this.revertCooldown === 0 && this.stumbleTime === 0) this.revert();
     } else {
       // vert airs spin faster, so a tap turns you around before you come back down (THPS makes this easy too)
       const turn = input.steer * Math.PI * (this.airRamp ? 2.4 : 1.5) * dt;
-      this.heading += turn; this.spin += turn;
+      if (this.popped) { this.heading += turn; this.spin += turn; }
+      else { const carve = input.steer * 1.4 * dt; this.heading += carve; this.airHeading += carve; }
     }
     if (this.popBuffer > 0 && (this.grounded || this.coyote > 0) && this.stumbleTime === 0) this.jump();
+    else if (this.popBuffer > 0 && !this.grounded && this.stumbleTime === 0) { if (!this.tryWallplant()) this.tryLeap(); }
     else if (!input.crouch) this.charge = 0;
 
     if (!this.grounded) {
       if (this.airTime === 0) { this.airPeak = this.position.y; this.overWater = false; }
       this.airPeak = Math.max(this.airPeak, this.position.y);
       if (!this.overWater && this.world.canRideAt?.(this.position.x, this.position.z, this.position.y) === false) this.overWater = true;
+      // falling into a hole in the world (nothing below at all): bring the rider back quickly
+      if (!this.soaring && this.position.y < this.airPeak - 4 && this.world.groundAt(this.position.x, this.position.z, this.position.y + 0.5) === null) { this.bail('Fell into a hole · back to solid ground', true, true); return; }
       this.airTime += dt; this.verticalSpeed -= 14 * dt;
       const direction = directionOf(input), special = this.specialReady && !!input.grind;
       if (this.pending.flip) this.startTrick(special ? SPECIAL_FLIP : FLIP_TRICKS[direction], 'flip', special ? 'rune' : undefined);
@@ -256,19 +333,55 @@ export class Skater {
     const direction = this.travelHeading;
     const delta = { x: -Math.sin(direction) * this.speed * dt, y: this.grounded ? 0 : this.verticalSpeed * dt, z: -Math.cos(direction) * this.speed * dt };
     if (this.grounded) {
-      if (this.world.canRideAt?.(this.position.x+delta.x,this.position.z+delta.z,this.position.y) === false) {
-        delta.x = delta.z = 0; this.speed = 0; this.message = 'Water ahead · find a bridge';
-      }
+      if (this.world.canRideAt?.(this.position.x, this.position.z, this.position.y) === false) {
+        // already on water or a hole (slid off a wall or a rail's end): roll back out, or be rescued in a moment
+        if ((this.wetClock += dt) > 0.6) {
+          const hole = this.world.groundAt(this.position.x, this.position.z, this.position.y + 0.5, true) === null;
+          this.bail(hole ? 'Fell into a hole · back to solid ground' : 'Splash! · back to dry ground', true, true); return;
+        }
+      } else if (this.edgeAt(this.position.x + delta.x, this.position.z + delta.z, this.position.y)) {
+        this.wetClock = 0;
+        const { x, z, y } = this.position, edge = this.edgeAt(x + delta.x, z + delta.z, y);
+        // shorelines and the map's edge follow tile edges: glance along them like a wall and keep rolling;
+        // only riding straight at one stops you
+        const alongX = Math.abs(delta.x) > Math.abs(delta.z) * 0.35 && !this.edgeAt(x + delta.x, z, y);
+        const alongZ = !alongX && Math.abs(delta.z) > Math.abs(delta.x) * 0.35 && !this.edgeAt(x, z + delta.z, y);
+        if (alongX || alongZ) {
+          if (alongX) delta.z = 0; else delta.x = 0;
+          const off = Math.atan2(-delta.x, -delta.z) - direction;
+          this.heading += Math.atan2(Math.sin(off), Math.cos(off)) * Math.min(1, 8 * dt);
+          this.speed *= 1 - 1.5 * dt;
+        } else {
+          // head-on, or into a corner: stop, and swing the board toward the nearest open direction (tile edges
+          // run north-south and east-west) so pushing gets you going again instead of pressing into the edge
+          delta.x = delta.z = 0; this.speed = 0;
+          let open: number | null = null, best = -2;
+          for (const angle of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+            if (this.edgeAt(x - Math.sin(angle) * 0.3, z - Math.cos(angle) * 0.3, y)) continue;
+            if (Math.cos(angle - direction) > best) { best = Math.cos(angle - direction); open = angle; }
+          }
+          if (open !== null) { const off = open - direction; this.heading += Math.atan2(Math.sin(off), Math.cos(off)) * Math.min(1, 6 * dt); }
+        }
+        if (this.noteClock <= 0) { this.message = edge === 'map' ? 'Edge of the map · turn around' : edge === 'hole' ? 'Hole ahead · turn around' : 'Water ahead · find a bridge'; this.noteClock = 2; }
+      } else this.wetClock = 0;
       const ground = this.supportAt(this.position.x + delta.x, this.position.z + delta.z, this.position.y);
       // up a ramp long enough (not a curb), the vertical speed you carry off its lip launches you
-      const rampVy = this.rampRun > ROLL.rampRun && this.inclineBehind > ROLL.rampPitch ? this.speed * Math.tan(Math.min(ROLL.maxPitch, this.inclineBehind)) : 0;
+      const throwVy = this.rampRun > ROLL.rampRun && this.inclineBehind > ROLL.rampPitch ? this.speed * Math.tan(Math.min(ROLL.maxPitch, this.inclineBehind)) : 0;
+      const rampVy = throwVy >= ROLL.minLaunch ? throwVy : 0;
       const rise = ground === null ? -Infinity : ground - this.position.y;
       if (ground !== null && rise >= -0.42 && rise <= 0.45 && !(rampVy > 0 && rise < (rampVy - 21 * dt) * dt)) delta.y = rise;
       else {
         this.grounded = false; this.airHeading = this.heading + this.stance; this.airTime = this.spin = 0;
-        this.verticalSpeed = rampVy; this.powerslide = 0; this.rampRun = 0;
-        if (rampVy > 0) { delta.y = rampVy * dt; this.message = 'Launch'; }
+        this.verticalSpeed = rampVy; this.powerslide = 0; this.rampRun = 0; this.popped = rampVy > 0;
+        if (rampVy > 0) delta.y = rampVy * dt;
       }
+    } else if (this.world.inBounds?.(this.position.x + delta.x, this.position.z + delta.z) === false) {
+      // flying at the edge of the map: an invisible wall you slide along
+      const { x, z } = this.position;
+      if (this.world.inBounds(x + delta.x, z)) delta.z = 0; else if (this.world.inBounds(x, z + delta.z)) delta.x = 0; else delta.x = delta.z = 0;
+      this.speed = Math.hypot(delta.x, delta.z) / dt;
+      if (this.speed > 0.1) this.airHeading = Math.atan2(-delta.x, -delta.z);
+      if (this.noteClock <= 0) { this.message = 'Edge of the map · turn around'; this.noteClock = 2; }
     }
     const previous = this.position;
     const next = this.world.move(previous, delta);
@@ -282,36 +395,57 @@ export class Skater {
       const impact = next.normal ? Math.max(0, -(vx * nx + vz * nz)) : Math.max(0, (requestedDistance - achievedDistance) / dt);
       if (next.normal) this.wallTouch = { nx: next.normal.x, nz: next.normal.z, age: 0 };
       if (!this.grounded && next.normal && !input.crouch && this.tryWallride(next.normal, vx, vz)) return;
-      if (impact > 7.8 && this.immunity === 0) { this.bail('Hard impact · take a moment'); return; }
-      const slideX = vx + nx * impact, slideZ = vz + nz * impact;
-      this.speed = Math.hypot(slideX, slideZ) * (impact > 0.2 ? 0.97 : 1);
+      // a catapult flight clipping a wall bonks off it instead (you can't steer those)
+      if (impact > IMPACT.bail && this.immunity === 0 && !this.soaring) { this.bail('Hard impact · take a moment'); return; }
+      const slideX = vx + nx * impact, slideZ = vz + nz * impact, before = this.speed;
+      let slide = Math.hypot(slideX, slideZ), travel = Math.atan2(-slideX, -slideZ);
+      if (this.grounded && next.normal && (before > 0.3 || input.push) && slide < before * 0.45) {
+        // rode (or pushed) straight at it: turn along the wall instead of pinning against it, toward the side
+        // you're steering (or already drifting)
+        const along = Math.atan2(nz, -nx), drift = (vx * -nz + vz * nx) * 0.02, aim = direction + input.steer * 0.6;
+        travel = Math.cos(along - aim) + drift >= Math.cos(along + Math.PI - aim) - drift ? along : along + Math.PI;
+        slide = Math.max(slide, Math.min(before * 0.45, 4));
+      }
+      this.speed = slide * (impact > IMPACT.bonk ? 0.8 : impact > 3 ? 0.97 : 1);
       if (this.speed > 0.2) {
-        const travel = Math.atan2(-slideX, -slideZ);
         if (this.grounded) this.heading = travel - this.stance; else this.airHeading = travel;
       }
-      if (impact > 1.5) this.message = 'Bumped · steer away and keep rolling';
+      if (impact > IMPACT.bonk && this.noteClock <= 0) { this.message = 'Bonk!'; this.noteClock = 2; this.events.push({ type: 'bonk', score: 0, names: [], combo: this.comboCount }); }
     }
     const ground = this.supportAt(next.x, next.z, Math.max(previous.y, next.y));
     this.heightAboveGround=ground===null?2:Math.max(0,this.position.y-ground);
     if (!this.grounded && this.verticalSpeed <= 0 && ground !== null && next.y <= ground + 0.05) {
       this.position.y = ground; this.grounded = true;
       this.departedRail=null; this.airRamp = null;
-      if (this.world.canRideAt?.(next.x,next.z,ground) === false) { this.bail('Water landing · returning to dry ground', true); return; }
+      if (this.world.canRideAt?.(next.x,next.z,ground) === false) {
+        // water or a hole: the combo you flew in with still counts, then you're put back on solid ground
+        const hole = this.world.groundAt(next.x, next.z, ground + 0.5, true) === null;
+        this.bail(hole ? 'Fell into a hole · back to solid ground' : 'Splash! · back to dry ground', true, true); return;
+      }
       const fallSpeed = this.verticalSpeed; this.verticalSpeed = 0;
       const alignment = Math.abs(Math.sin(this.heading - this.airHeading));
       // landing on a downslope (a bank, a ramp's far side) turns the fall into speed and takes the sting out
       const slope = this.slopeAt(next.x, next.z, ground, this.airHeading);
       this.pitch = Math.max(-ROLL.maxPitch, Math.min(ROLL.maxPitch, slope));
-      if (slope < -0.05) this.speed = Math.min(ROLL.maxSpeed, this.speed - fallSpeed * Math.sin(-slope) * 0.9);
-      if (fallSpeed * Math.cos(slope) < -14) { this.bail('Heavy landing · catch your breath'); return; }
+      if (slope < -0.05) this.speed = Math.min(this.topSpeed, this.speed - fallSpeed * Math.sin(-slope) * 0.9);
+      const soared = this.soaring; this.soaring = false;
+      if (!this.abilities.ironKnees && !soared && fallSpeed * Math.cos(slope) < -LANDING.heavy) { this.bail('Heavy landing · that was a long way down'); return; }
       const grabbing = !!this.grab && !!input.grab; this.grab = null;
-      if (grabbing) this.stumble('Still grabbing · let go before you land');
-      else if ((this.trick && this.trick.elapsed + 0.06 < this.trick.duration) || (this.speed > 2 && alignment > 0.94)) this.stumble('Sketchy landing · combo lost');
+      const sketchy = this.landingFault(grabbing, this.speed > 2 && alignment > 0.97);
+      if (sketchy) this.sketchy(sketchy);
       else { this.awardGaps(ground); this.land(!!input.manual); }
     } else if (!this.grounded && delta.y > 0 && next.y < previous.y + delta.y - 0.005) this.verticalSpeed = 0;
     if (!this.grounded && this.wallTouch && !next.blocked && !input.crouch && this.catchRecentWall()) return;
-    if (this.position.y < -20 || this.airTime > 6) { this.bail('Out of bounds · returning to solid ground', true); return; }
-    if (this.grounded && !next.blocked) this.safe = { ...this.position };
+    // perched in the air on something too steep to stand on (a roof crease, the top of a wall): not falling,
+    // not landing; bring the rider down quickly instead of hovering there
+    this.perchTime = !this.grounded && this.verticalSpeed < -2 && Math.abs(next.y - previous.y) < 0.002 ? this.perchTime + dt : 0;
+    if (this.grounded || this.grinding || this.wallride) this.soaring = false;
+    if (this.perchTime > 0.6) { this.bail('Stuck up there · back to solid ground', true, true); return; }
+    if (this.position.y < -20 || (this.airTime > 6 && !this.soaring)) { this.bail('Out of bounds · returning to solid ground', true, true); return; }
+    if (this.grounded && !next.blocked && this.world.canRideAt?.(this.position.x, this.position.z, this.position.y) !== false) {
+      this.safe = { ...this.position };
+      if ((this.safeClock += dt) >= 0.5) { this.safeClock = 0; this.safeTrail.push({ ...this.position }); if (this.safeTrail.length > 6) this.safeTrail.shift(); }
+    }
     if (this.grounded) {
       // incline ahead of and behind the board, ignoring samples that look over a drop or up a wall
       // measured from the ground right under the board (the rider rides on the highest of several samples,
@@ -336,9 +470,11 @@ export class Skater {
       if (this.surgeCooldown > 0) this.message = `Surge recharging · ${this.surgeCooldown.toFixed(1)} s`;
       return;
     }
-    this.surgeCooldown = SURGE.cooldown; this.surgeTime = 0;
+    this.surgeCooldown = this.abilities.surgeCooldown; this.surgeTime = 0;
     if (this.transition) this.transition.v += Math.sign(this.transition.v || 1) * SURGE.boost;
-    else this.speed = Math.min(ROLL.maxSpeed, Math.max(this.speed + SURGE.boost, SURGE.minimum));
+    else this.speed = Math.min(this.topSpeed, Math.max(this.speed + SURGE.boost, SURGE.minimum));
+    // mastered (level 99): Surge in the air lifts you too
+    if (!this.grounded && !this.transition && this.abilities.airSurge) this.verticalSpeed = Math.max(this.verticalSpeed, 0) + SURGE.lift;
     this.powerslide = 0; this.message = 'Surge!';
     this.events.push({ type: 'surge', score: 0, names: ['Surge'], combo: this.comboCount });
   }
@@ -378,8 +514,8 @@ export class Skater {
       this.transition = { ramp, s: angle * ramp.radius, u: local.u, v: along, facing };
       this.position = rampPoint(ramp, local.u, angle * ramp.radius);
       this.grounded = true; this.verticalSpeed = 0; this.airRamp = null; this.departedRail = null;
-      if (grabbing) this.stumble('Still grabbing · let go before you land');
-      else if ((this.trick && this.trick.elapsed + 0.06 < this.trick.duration) || (total > 2 && Math.abs(along) < total * 0.34)) this.stumble('Sketchy landing · combo lost');
+      const sketchy = this.landingFault(grabbing, total > 2 && Math.abs(along) < total * 0.34);
+      if (sketchy) this.sketchy(sketchy);
       else { this.awardGaps(this.position.y); this.land(false); }
       if (this.stumbleTime > 0) this.transition.v *= 0.65;
       this.stance = this.transition.v < 0 ? Math.PI : 0;
@@ -422,7 +558,7 @@ export class Skater {
       this.addTrick('Ollie', 100); this.popBuffer = 0; this.charge = 0;
     }
     this.position = rampPoint(ramp, tr.u, tr.s);
-    this.transition = null; this.grounded = false; this.airRamp = ramp; this.coyote = 0;
+    this.transition = null; this.grounded = false; this.airRamp = ramp; this.coyote = 0; this.popped = true;
     this.verticalSpeed = vy; this.speed = Math.hypot(vx, vz);
     this.airHeading = this.speed > 0.2 ? Math.atan2(-vx, -vz) : this.heading;
     this.airTime = this.spin = 0;
@@ -468,15 +604,51 @@ export class Skater {
     if (this.airTime > GAPS.hang) this.addTrick('Hang time', Math.round(200 * this.airTime));
   }
   private jump() {
-    // consecutive ollies don't link: a combo still open from the last landing banks first
-    if (this.landWindow > 0) { this.landWindow = 0; this.bank(); }
-    this.verticalSpeed = 4.3 + this.charge * 2; this.grounded = false; this.manual = false;
-    this.airTime = this.spin = 0; this.airHeading = this.heading + this.stance;
+    // popping again inside the landing window links the next air into the same combo (repeats score less)
+    this.landWindow = 0;
+    this.verticalSpeed = (OLLIE.base + this.charge * OLLIE.charged) * this.abilities.pop; this.grounded = false; this.manual = false; this.popped = true;
+    this.airTime = this.spin = 0; this.airHeading = this.heading + this.stance; this.leapsUsed = 0;
     this.popBuffer = this.coyote = 0; this.charge = 0;
     this.addTrick('Ollie', 100);
   }
+  /**
+   * Wallplant (THPS 4): Space in the air with a wall just ahead (or touched a moment ago) kicks you up and
+   * off it, bouncing your line away from the wall. Chains up between walls.
+   */
+  private tryWallplant() {
+    if (!this.abilities.wallplant || this.plantCooldown > 0 || this.airTime < 0.05) return false;
+    const direction = this.airHeading, fx = -Math.sin(direction), fz = -Math.cos(direction);
+    let normal: { x: number; z: number } | null = null;
+    const probe = this.world.move(this.position, { x: fx * 0.4, y: 0, z: fz * 0.4 });
+    if (probe.blocked && probe.normal && probe.normal.x * fx + probe.normal.z * fz < -0.2) normal = { x: probe.normal.x, z: probe.normal.z };
+    else if (this.wallTouch) normal = { x: this.wallTouch.nx, z: this.wallTouch.nz };
+    if (!normal) return false;
+    const vx = fx * this.speed, vz = fz * this.speed, into = vx * normal.x + vz * normal.z;
+    let rx = vx - 2 * Math.min(0, into) * normal.x, rz = vz - 2 * Math.min(0, into) * normal.z;
+    const away = rx * normal.x + rz * normal.z;
+    if (away < 2.5) { rx += normal.x * (2.5 - away); rz += normal.z * (2.5 - away); }
+    this.speed = Math.min(this.topSpeed, Math.max(3, Math.hypot(rx, rz) * 0.85));
+    this.airHeading = Math.atan2(-rx, -rz); this.heading = this.airHeading - this.stance;
+    this.verticalSpeed = AIR_MOVES.wallplant * this.abilities.pop;
+    this.plantCooldown = AIR_MOVES.plantCooldown; this.wallTouch = null; this.wallCooldown = 0.25; this.popBuffer = 0; this.popped = true;
+    this.addTrick('Wallplant', 250);
+    return true;
+  }
+  /** Agility leap: a second pop in the air (Space again), once per air (twice at level 90). */
+  private tryLeap() {
+    if (this.leapsUsed >= this.abilities.leaps || this.airTime < 0.1) return false;
+    // close above the ground on the way down, Space is a buffered ollie for the landing instead
+    if (this.verticalSpeed < 0 && this.heightAboveGround < AIR_MOVES.leapMinHeight) return false;
+    this.leapsUsed++; this.popBuffer = 0; this.popped = true;
+    this.verticalSpeed = Math.max(0, this.verticalSpeed) * 0.3 + AIR_MOVES.leap * this.abilities.pop;
+    this.addTrick('Agility leap', 200);
+    this.events.push({ type: 'leap', score: 0, names: ['Agility leap'], combo: this.comboCount });
+    return true;
+  }
   private addTrick(name: string, points: number) {
-    this.comboPoints += points; this.comboCount++; this.names.push(name); this.message = this.names.join(' + ');
+    const repeats = this.repeats.get(name) ?? 0; this.repeats.set(name, repeats + 1);
+    this.comboPoints += Math.round(points * Math.max(REPEAT.floor, 1 - REPEAT.step * repeats));
+    this.comboCount++; this.names.push(name); this.message = this.names.join(' + ');
     this.events.push({ type: 'trick', score: 0, names: [name], combo: this.comboCount });
   }
   get specialReady() { return this.special >= 0.999; }
@@ -499,6 +671,8 @@ export class Skater {
   }
   private land(linkManual: boolean) {
     this.stance = Math.cos(this.heading - this.airHeading) < 0 ? Math.PI : 0;
+    // the board snaps onto the line you were flying along (THPS): momentum keeps its direction
+    this.heading = this.airHeading - this.stance;
     const turns = Math.floor((Math.abs(this.spin) + 0.25) / Math.PI);
     // spins score on their own too (a plain 180 out of a vert air has no ollie to start the combo)
     if (turns > 0) this.addTrick(`${turns * 180}°`, turns * 180);
@@ -522,22 +696,56 @@ export class Skater {
     }
     this.clearCombo();
   }
-  private stumble(reason: string) {
-    this.special *= 0.5;
-    this.speed *= 0.65; this.stumbleTime = 0.35; this.manual = false; this.message = reason;
-    this.airTime = 0; this.clearCombo();
-    this.events.push({ type: 'bail', score: 0, names: ['stumble'], combo: 0 });
+  /**
+   * Why a landing is sketchy, or null when it's clean. A flip that's at least half done finishes itself
+   * as you land (forgiving, like THPS on its easier settings).
+   */
+  private landingFault(grabbing: boolean, sideways: boolean) {
+    const trick = this.trick;
+    if (trick && trick.elapsed + 0.06 < trick.duration && trick.elapsed >= trick.duration * LANDING.flipFinish) trick.elapsed = trick.duration;
+    if (grabbing) return 'Still grabbing on landing';
+    if (trick && trick.elapsed + 0.06 < trick.duration) return `Landed mid-${trick.name.toLowerCase()}`;
+    if (sideways) return 'Landed sideways';
+    return null;
   }
-  private bail(reason: string, relocate = false) {
+  /** What stops the board at a point: water or a hole in the world, the edge of the map, or nothing. */
+  private edgeAt(x: number, z: number, y: number): 'water' | 'hole' | 'map' | null {
+    if (this.world.inBounds?.(x, z) === false) return 'map';
+    if (this.world.canRideAt?.(x, z, y) !== false) return null;
+    return this.world.groundAt(x, z, y + 0.5, true) === null ? 'hole' : 'water';
+  }
+  /**
+   * A sketchy landing (or a lost manual / grind balance): a wobble that still banks the combo at half value.
+   * Only real bails (a hard wall hit or a heavy landing) lose it.
+   */
+  private sketchy(reason: string) {
+    this.landWindow = 0;
+    let note = reason;
+    if (this.comboCount) {
+      const score = Math.round(this.comboPoints * LANDING.sketchy) * this.comboCount;
+      this.totalScore += score; note = `${reason} · half points +${score.toLocaleString('en-GB')}`;
+      this.events.push({ type: 'land', score, names: [...this.names], combo: this.comboCount, sketchy: true });
+    }
+    this.special *= 0.75;
+    this.speed *= 0.85; this.stumbleTime = 0.3; this.manual = false; this.message = note;
+    this.airTime = 0; this.clearCombo();
+    this.events.push({ type: 'sketchy', score: 0, names: [], combo: 0 });
+  }
+  /** Down on the ground; `keep` banks the open combo first (water, holes), otherwise it's lost. */
+  private bail(reason: string, relocate = false, keep = false) {
     // a combo that already landed still counts
-    if (this.landWindow > 0) { this.landWindow = 0; this.bank(); }
-    this.wallride = null; this.grab = null; this.grindStyle = null; this.transition = null; this.airRamp = null; this.special = 0;
+    let note = reason;
+    if (this.landWindow > 0 || (keep && this.comboCount)) {
+      const before = this.totalScore; this.landWindow = 0; this.bank();
+      if (keep && this.totalScore > before) note = `${reason} · combo banked +${(this.totalScore - before).toLocaleString('en-GB')}`;
+    }
+    this.wallride = null; this.grab = null; this.grindStyle = null; this.transition = null; this.airRamp = null; this.special = keep ? this.special : 0;
     this.bailSlide = relocate ? 0 : Math.min(this.speed * 0.55, 5); this.bailHeading = this.travelHeading;
-    this.speed = 0; this.bailTime = BAIL.time; this.relocate = relocate;
-    this.message = reason; this.manual = false; this.grinding = null; this.clearCombo();
+    this.speed = 0; this.bailTime = relocate ? BAIL.rescue : BAIL.time; this.relocate = relocate;
+    this.message = note; this.manual = false; this.grinding = null; this.clearCombo();
     this.events.push({ type: 'bail', score: 0, names: [], combo: 0 });
   }
-  private clearCombo() { this.comboPoints = this.comboCount = 0; this.trick = null; this.names = []; this.used.clear(); }
+  private clearCombo() { this.comboPoints = this.comboCount = 0; this.trick = null; this.names = []; this.used.clear(); this.repeats.clear(); }
 
   /**
    * Magnetic catch: any rail or wall top within reach latches, whether the board is coming down onto it,
@@ -569,7 +777,7 @@ export class Skater {
     const { rail, t, x, y, z } = best;
     const dx = rail.b.x - rail.a.x, dz = rail.b.z - rail.a.z;
     const dot = (-Math.sin(this.airHeading) * dx - Math.cos(this.airHeading) * dz) / Math.hypot(dx, dz);
-    this.grinding = { rail, t, direction: dot < 0 ? -1 : 1 }; this.balance = 0; this.verticalSpeed = 0; this.grindTime = 0;
+    this.grinding = { rail, t, direction: dot < 0 ? -1 : 1 }; this.balance = 0; this.verticalSpeed = 0; this.grindTime = 0; this.leapsUsed = 0;
     // keep most of the speed even when catching at an angle
     this.speed = Math.max(2.5, this.speed * (0.8 + 0.2 * Math.abs(dot)));
     this.position = { x, y, z }; this.heading = Math.atan2(-dx * this.grinding.direction, -dz * this.grinding.direction); this.airHeading = this.heading; this.stance = 0;
@@ -594,7 +802,7 @@ export class Skater {
     this.speed = Math.max(this.speed * 0.92, Math.abs(along));
     // a little lift onto the wall; an ollie's full pop would carry straight up and over
     this.verticalSpeed = Math.min(WALLRIDE.maxLift, Math.max(this.verticalSpeed, WALLRIDE.lift));
-    this.airHeading = this.heading = Math.atan2(-tx * dir, -tz * dir); this.spin = 0;
+    this.airHeading = this.heading = Math.atan2(-tx * dir, -tz * dir); this.spin = 0; this.leapsUsed = 0;
     this.trick = null; this.addTrick('Wallride', 200);
     return true;
   }
@@ -618,7 +826,7 @@ export class Skater {
       this.popBuffer = 0;
       const ax = tx + w.nx * 0.7, az = tz + w.nz * 0.7;
       this.endWallride();
-      this.airHeading = this.heading = Math.atan2(-ax, -az); this.verticalSpeed = 4.6;
+      this.airHeading = this.heading = Math.atan2(-ax, -az); this.verticalSpeed = 5 * this.abilities.pop;
       this.addTrick('Wallie', 150);
       return;
     }
@@ -646,7 +854,7 @@ export class Skater {
     this.pitch += (Math.max(-0.45, Math.min(0.45, Math.atan(rise))) - this.pitch) * Math.min(1, dt * 16);
     // balance starts calm and gets harder the longer you hold the grind
     this.grindTime += dt;
-    const wobble = Math.min(1, 0.2 + this.grindTime / 3) * (this.grindStyle?.wobble ?? 1);
+    const wobble = Math.min(1, 0.15 + this.grindTime / 5) * (this.grindStyle?.wobble ?? 1) * this.abilities.steady * (this.perfectBalance > 0 ? 0 : 1);
     if (!input.brake) this.brakeLatch = false;
     const drop = input.brake && !this.brakeLatch;
     this.balance += ((Math.sin(this.animationTime * 3) * 0.28 + 0.14) * wobble - input.steer * 1.2) * dt;
@@ -674,7 +882,7 @@ export class Skater {
         const next=this.world.move(this.position,{x:dx/length*clear,y:0,z:dz/length*clear});
         this.position={x:next.x,y:next.y,z:next.z};
       }
-      if(Math.abs(this.balance)>1)this.stumble('Lost grind balance · combo lost');
+      if(Math.abs(this.balance)>1)this.sketchy(this.balance>0?'Fell off the grind · leaned too far right':'Fell off the grind · leaned too far left');
       if (pop) this.addTrick('Ollie out', 100);
     }
   }

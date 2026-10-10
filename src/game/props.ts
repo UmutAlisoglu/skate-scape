@@ -15,23 +15,23 @@ export const PROP_KINDS: { kind: PropKind; label: string }[] = [
 export interface PropData { id: string; kind: PropKind; x: number; y: number; z: number; yaw: number }
 
 // cache textures already used by the training grounds (all in the exported texture set)
-const STONE = 72, PLANKS = 160;
+export const STONE = 72, PLANKS = 160;
 /** Quarter pipe size: 82 degrees at the coping, so airs go straight up (vert) */
 export const QUARTER = { width: 3.2, radius: 2.2, height: 1.9, deck: 1.3 };
 
-interface Part { geometry: THREE.BufferGeometry; material: 'wood' | 'stone' | 'metal'; solid: boolean }
-interface Shape { parts: Part[]; rails: { a: [number, number, number]; b: [number, number, number]; width: number; name: string }[]; quarter?: boolean }
+export interface Part { geometry: THREE.BufferGeometry; material: 'wood' | 'stone' | 'metal'; solid: boolean }
+export interface Shape { parts: Part[]; rails: { a: [number, number, number]; b: [number, number, number]; width: number; name: string }[]; quarter?: boolean }
 
 /** Non-indexed geometry from a flat list of triangle corners (local space: forward is -z). */
-function triangles(points: number[]) {
+export function triangles(points: number[]) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
   geometry.computeVertexNormals();
   return geometry;
 }
-const quad = (a: number[], b: number[], c: number[], d: number[]) => [...a, ...b, ...c, ...a, ...c, ...d];
+export const quad = (a: number[], b: number[], c: number[], d: number[]) => [...a, ...b, ...c, ...a, ...c, ...d];
 /** A ramp wedge rising toward -z from z0 (height 0) to z1 (height h), with a vertical back and sides. */
-function wedge(width: number, z0: number, z1: number, h: number) {
+export function wedge(width: number, z0: number, z1: number, h: number) {
   const l = -width / 2, r = width / 2;
   const points = [
     ...quad([l, 0, z0], [r, 0, z0], [r, h, z1], [l, h, z1]),
@@ -42,7 +42,7 @@ function wedge(width: number, z0: number, z1: number, h: number) {
   return triangles(points);
 }
 /** Mirror along z, keeping faces pointing outward (mirroring flips the triangle winding, so swap two corners). */
-function mirrorZ(geometry: THREE.BufferGeometry) {
+export function mirrorZ(geometry: THREE.BufferGeometry) {
   const p = geometry.getAttribute('position') as THREE.BufferAttribute;
   for (let i = 0; i < p.count; i++) p.setZ(i, -p.getZ(i));
   for (let t = 0; t < p.count; t += 3) {
@@ -52,7 +52,36 @@ function mirrorZ(geometry: THREE.BufferGeometry) {
   geometry.computeVertexNormals();
   return geometry;
 }
-const box = (w: number, h: number, d: number, x = 0, y = h / 2, z = 0) => new THREE.BoxGeometry(w, h, d).translate(x, y, z).toNonIndexed();
+export const box = (w: number, h: number, d: number, x = 0, y = h / 2, z = 0) => new THREE.BoxGeometry(w, h, d).translate(x, y, z).toNonIndexed();
+
+/** A quarter pipe's parts: the riding face (analytic, see transition.ts), solid sides, deck and coping. */
+export function quarterShape({ width, radius, height, deck }: { width: number; radius: number; height: number; deck: number }): Shape {
+  const l = -width / 2, r = width / 2, top = rampTop({ radius, height } as Ramp);
+  const face: number[] = [], sides: number[] = [], steps = 16;
+  const at = (i: number) => { const a = (top.angle * i) / steps; return [radius * Math.sin(a), radius * (1 - Math.cos(a))]; };
+  for (let i = 0; i < steps; i++) {
+    const [w0, y0] = at(i), [w1, y1] = at(i + 1);
+    face.push(...quad([l, y0, -w0], [r, y0, -w0], [r, y1, -w1], [l, y1, -w1]));
+    // side panels under the face (vertical strips down to the floor)
+    sides.push(...quad([l, 0, -w0], [l, y0, -w0], [l, y1, -w1], [l, 0, -w1]), ...quad([r, 0, -w1], [r, y1, -w1], [r, y0, -w0], [r, 0, -w0]));
+  }
+  const b = -(top.w + deck), c = -top.w;
+  const platform = [
+    ...quad([l, height, c], [r, height, c], [r, height, b], [l, height, b]), // deck top
+    ...quad([l, 0, b], [l, height, b], [r, height, b], [r, 0, b]), // back
+    ...quad([l, 0, c], [l, height, c], [l, height, b], [l, 0, b]), ...quad([r, 0, b], [r, height, b], [r, height, c], [r, 0, c]), // deck sides
+  ];
+  return {
+    quarter: true,
+    parts: [
+      { geometry: triangles(face), material: 'wood', solid: false },
+      { geometry: triangles(sides), material: 'wood', solid: true },
+      { geometry: triangles(platform), material: 'wood', solid: true },
+      { geometry: new THREE.CylinderGeometry(0.035, 0.035, width, 8).rotateZ(Math.PI / 2).translate(0, height, c).toNonIndexed(), material: 'metal', solid: false },
+    ],
+    rails: [{ a: [l, height + 0.035, c], b: [r, height + 0.035, c], width: 0.07, name: 'Coping' }],
+  };
+}
 
 function shape(kind: PropKind): Shape {
   switch (kind) {
@@ -78,38 +107,12 @@ function shape(kind: PropKind): Shape {
         rails: [-0.9, 0.9].map((x) => ({ a: [x, 0.52, 1.1] as [number, number, number], b: [x, 0.52, -1.1] as [number, number, number], width: 0.05, name: 'Funbox edge' })),
       };
     }
-    case 'quarter': {
-      const { width, radius, height, deck } = QUARTER, l = -width / 2, r = width / 2, top = rampTop({ radius, height } as Ramp);
-      const face: number[] = [], sides: number[] = [], steps = 16;
-      const at = (i: number) => { const a = (top.angle * i) / steps; return [radius * Math.sin(a), radius * (1 - Math.cos(a))]; };
-      for (let i = 0; i < steps; i++) {
-        const [w0, y0] = at(i), [w1, y1] = at(i + 1);
-        face.push(...quad([l, y0, -w0], [r, y0, -w0], [r, y1, -w1], [l, y1, -w1]));
-        // side panels under the face (vertical strips down to the floor)
-        sides.push(...quad([l, 0, -w0], [l, y0, -w0], [l, y1, -w1], [l, 0, -w1]), ...quad([r, 0, -w1], [r, y1, -w1], [r, y0, -w0], [r, 0, -w0]));
-      }
-      const b = -(top.w + deck), c = -top.w;
-      const platform = [
-        ...quad([l, height, c], [r, height, c], [r, height, b], [l, height, b]), // deck top
-        ...quad([l, 0, b], [l, height, b], [r, height, b], [r, 0, b]), // back
-        ...quad([l, 0, c], [l, height, c], [l, height, b], [l, 0, b]), ...quad([r, 0, b], [r, height, b], [r, height, c], [r, 0, c]), // deck sides
-      ];
-      return {
-        quarter: true,
-        parts: [
-          { geometry: triangles(face), material: 'wood', solid: false },
-          { geometry: triangles(sides), material: 'wood', solid: true },
-          { geometry: triangles(platform), material: 'wood', solid: true },
-          { geometry: new THREE.CylinderGeometry(0.035, 0.035, width, 8).rotateZ(Math.PI / 2).translate(0, height, c).toNonIndexed(), material: 'metal', solid: false },
-        ],
-        rails: [{ a: [l, height + 0.035, c], b: [r, height + 0.035, c], width: 0.07, name: 'Coping' }],
-      };
-    }
+    case 'quarter': return quarterShape(QUARTER);
   }
 }
 
 /** Planar texture coordinates from each corner's dominant normal axis (1 texture tile per metre). */
-function planarUv(geometry: THREE.BufferGeometry) {
+export function planarUv(geometry: THREE.BufferGeometry) {
   const p = geometry.getAttribute('position'), n = geometry.getAttribute('normal'), uv = new Float32Array(p.count * 2);
   for (let i = 0; i < p.count; i++) {
     const nx = Math.abs(n.getX(i)), ny = Math.abs(n.getY(i));
@@ -127,11 +130,14 @@ export class PropManager {
   private ghost: THREE.Group | null = null; private ghostKind: PropKind | null = null;
   private readonly materials: Record<Part['material'], THREE.Material>;
   private readonly ghostMaterial = new THREE.MeshBasicMaterial({ color: 0xa8f0b0, transparent: true, opacity: 0.42, depthWrite: false });
+  private baseRamps: Ramp[];
   constructor(private scene: THREE.Scene, private collision: WorldCollision, private baseRails: Rail[], textures: Surfaces | null, private storageKey: string, private storage: Storage | null = globalThis.localStorage ?? null) {
+    // quarter pipes already in the world (mega ramps) stay alongside the dropped ones
+    this.baseRamps = [...collision.ramps];
     this.materials = {
-      wood: rsMaterial({ surfaces: textures, textureId: PLANKS, color: 0x9a7048 }),
-      stone: rsMaterial({ surfaces: textures, textureId: STONE, color: 0x9a958a }),
-      metal: rsMaterial({ color: 0x55666c }),
+      wood: rsMaterial({ surfaces: textures, textureId: PLANKS, color: 0x9a7048, cutout: true }),
+      stone: rsMaterial({ surfaces: textures, textureId: STONE, color: 0x9a958a, cutout: true }),
+      metal: rsMaterial({ color: 0x55666c, cutout: true }),
     };
   }
   load() {
@@ -173,7 +179,7 @@ export class PropManager {
   private refresh() {
     const built = [...this.built.values()];
     this.collision.rails = [...this.baseRails, ...built.flatMap((b) => b.rails)];
-    this.collision.ramps = built.flatMap((b) => (b.ramp ? [b.ramp] : []));
+    this.collision.ramps = [...this.baseRamps, ...built.flatMap((b) => (b.ramp ? [b.ramp] : []))];
   }
   /** Translucent preview of a prop about to be dropped; null hides it. */
   preview(prop: Omit<PropData, 'id'> | null) {

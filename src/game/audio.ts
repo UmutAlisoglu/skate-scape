@@ -58,12 +58,16 @@ export class SkateAudio {
     if (!this.enabled || !this.context) return;
     if (event.type === 'trick') {
       if (event.names[0] === 'Ollie' || event.names[0] === 'Ollie out') this.pop();
-      else if (/°$|Revert|Manual|Nose manual|Wallride|grind|slide|Boardslide/i.test(event.names[0])) this.clack(0.5);
-      else this.whoosh();
+      else if (/°$|Revert|Manual|Nose manual|Wallride|Wallplant|grind|slide|Boardslide/i.test(event.names[0])) this.clack(0.5);
+      else if (event.names[0] !== 'Agility leap') this.whoosh();
     } else if (event.type === 'grind') this.clack(0.8);
     else if (event.type === 'bail') this.thud(1, true);
     else if (event.type === 'surge') this.surge();
     else if (event.type === 'slide') this.clack(0.4);
+    else if (event.type === 'bonk') this.thud(0.45);
+    else if (event.type === 'sketchy') this.thud(0.5);
+    else if (event.type === 'leap') { this.whoosh(); this.tone(392, 0, 0.18, 'triangle', 0.07, 784); }
+    else if (event.type === 'special') [659.25, 987.77].forEach((frequency, i) => this.tone(frequency, 0.09 * i, 0.25, 'triangle', 0.07));
   }
   /** RS-like jingle: a rising arpeggio for a challenge, a fuller fanfare for a level */
   fanfare(kind: 'challenge' | 'level') {

@@ -3,10 +3,10 @@
 // player animation base, applied to the composed model's labelled vertex groups. Frames tween, and switching
 // between animations crossfades, so nothing pops.
 import * as THREE from 'three';
-import { hdFaceColor } from '../shared/color.ts';
 import { SLOT, type AnimData, type ItemDef, type KitDef, type PartModel, type Wardrobe } from '../shared/player-data.ts';
-import { rsMaterial, layerOf, type Surfaces } from '../world/rs-material.ts';
-import { applyPose, blendPoses, framePose, originIndices, type AnimBase, type Pose } from './rs-pose.ts';
+import type { Surfaces } from '../world/rs-material.ts';
+import { blendPoses, framePose, originIndices, type AnimBase, type Pose } from './rs-pose.ts';
+import { composeParts, PosedMesh } from './posed-mesh.ts';
 import { measureSkateRig, skatePose, type SkateRigInfo } from './skate-rig.ts';
 import type { SkatePose } from './skate-pose.ts';
 import { ease } from '../shared/motion.ts';
@@ -31,21 +31,8 @@ type Seq = AnimData['seqs'][number];
 
 export class Avatar {
   readonly mesh: THREE.Mesh;
-  private geometry = new THREE.BufferGeometry();
-  // composed model in RS units (x right, y down, z behind)
-  private baseX = new Float64Array(0);
-  private baseY = new Float64Array(0);
-  private baseZ = new Float64Array(0);
-  private vx = new Float64Array(0);
-  private vy = new Float64Array(0);
-  private vz = new Float64Array(0);
-  private tris = new Int32Array(0);
-  /** per triangle: true = flat shaded (render type 1) */
-  private flat: boolean[] = [];
-  private groups: number[][] = [];
-  // per-frame scratch, sized by compose()
-  private smooth = new Float64Array(0);
-  private faces = new Float64Array(0);
+  /** the composed model (RS units: x right, y down, z behind), posed every frame */
+  private posed: PosedMesh;
   private rig: SkateRigInfo | null = null;
   /** height (m) to raise the model so its soles sit on the deck */
   skateSoleOffset = 0.18;
@@ -66,8 +53,9 @@ export class Avatar {
   private fadeFrom: Pose | null = null;
   private fadeTime = 0;
 
-  constructor(private wardrobe: Wardrobe, private anims: AnimData, private surfaces: Surfaces | null = null) {
-    this.mesh = new THREE.Mesh(this.geometry, rsMaterial({ vertexColors: true, surfaces }));
+  constructor(private wardrobe: Wardrobe, private anims: AnimData, surfaces: Surfaces | null = null, material?: THREE.Material) {
+    this.posed = new PosedMesh(surfaces, material);
+    this.mesh = this.posed.mesh;
     this.mesh.castShadow = true;
     this.base = anims.bases[0] ?? null;
     this.origins = this.base ? originIndices(this.base) : new Int32Array(0);
@@ -142,76 +130,25 @@ export class Avatar {
   }
 
   private compose(parts: PartModel[], colors: number[]) {
-    const X: number[] = [], Y: number[] = [], Z: number[] = [], labels: number[] = [];
-    const tris: number[] = [], triColors: number[] = [], triTextures: number[] = [], triUvs: number[] = [];
-    this.flat = [];
-    for (const p of parts) {
-      const offset = X.length;
-      for (let i = 0; i < p.v.length; i += 3) {
-        X.push(p.v[i]);
-        Y.push(p.v[i + 1]);
-        Z.push(p.v[i + 2]);
-      }
-      labels.push(...p.b);
-      for (let t = 0; t < p.c.length; t++) {
-        const type = p.i ? p.i[t] : 0;
-        const alpha = p.a ? p.a[t] : 0;
-        // the GL client never draws hidden (2) or black (3) faces
-        if (type === 2 || type === 3 || alpha >= 254) continue;
-        tris.push(p.t[t * 3] + offset, p.t[t * 3 + 1] + offset, p.t[t * 3 + 2] + offset);
-        this.flat.push(type === 1);
-        triColors.push(p.c[t]);
-        const tex = p.x ? p.x[t] : -1;
-        triTextures.push(tex);
-        for (let k = 0; k < 6; k++) triUvs.push(tex >= 0 && p.u ? p.u[t * 6 + k] : 0);
-      }
-    }
+    const model = composeParts(parts);
     // player color slots (hair, torso, legs, feet, skin)
     const w = this.wardrobe;
     for (let s = 0; s < 5; s++) {
       const body = w.destBody[s] ?? [];
       const skin = w.destSkin[s] ?? [];
-      for (let t = 0; t < triColors.length; t++) {
-        if (body.length > colors[s] && triColors[t] === w.sourceBody[s]) triColors[t] = body[colors[s]] | 0x10000;
-        else if (skin.length > colors[s] && triColors[t] === w.sourceSkin[s]) triColors[t] = skin[colors[s]] | 0x10000;
+      for (let t = 0; t < model.colors.length; t++) {
+        if (body.length > colors[s] && model.colors[t] === w.sourceBody[s]) model.colors[t] = body[colors[s]] | 0x10000;
+        else if (skin.length > colors[s] && model.colors[t] === w.sourceSkin[s]) model.colors[t] = skin[colors[s]] | 0x10000;
       }
     }
-
-    this.baseX = Float64Array.from(X);
-    this.baseY = Float64Array.from(Y);
-    this.baseZ = Float64Array.from(Z);
-    this.vx = new Float64Array(X.length);
-    this.vy = new Float64Array(X.length);
-    this.vz = new Float64Array(X.length);
-    this.tris = Int32Array.from(tris);
-    this.smooth = new Float64Array(X.length * 3);
-    this.faces = new Float64Array(tris.length);
-    this.groups = [];
-    labels.forEach((l, v) => (this.groups[l] ??= []).push(v));
+    // Players are built with ambient 64 (PlayerAppearance.createModel); colors in client gamma space.
+    this.posed.setModel(model, 64, w.textureBrightness);
     let sole = -Infinity;
-    for (const y of Y) sole = Math.max(sole, y);
+    for (const y of model.y) sole = Math.max(sole, y);
     // sole height in meters: the deck's grip tape is 0.132 m above the board origin
     this.skateSoleOffset = Number.isFinite(sole) ? 0.132 - (-sole / 128) : 0.18;
-    this.rig = this.base ? measureSkateRig(this.base, this.groups, this.baseX, this.baseY, this.baseZ) : null;
-
-    const triCount = tris.length / 3;
-    const color = new Uint8Array(triCount * 9);
-    const surface = new Float32Array(triCount * 3);
-    for (let t = 0; t < triCount; t++) {
-      const tex = triTextures[t];
-      // Players are built with ambient 64 (PlayerAppearance.createModel); colors in client gamma space.
-      const rgb = hdFaceColor(triColors[t] & 0xffff, 64, tex >= 0 ? (w.textureBrightness?.[tex] ?? 0) : 0);
-      for (let k = 0; k < 3; k++) color.set([(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff], t * 9 + k * 3);
-      surface.fill(tex >= 0 ? layerOf(this.surfaces, tex) : 0, t * 3, t * 3 + 3);
-    }
-    this.geometry.dispose();
-    this.geometry = new THREE.BufferGeometry();
-    this.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(triCount * 9), 3));
-    this.geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(triCount * 9), 3));
-    this.geometry.setAttribute('color', new THREE.BufferAttribute(color, 3, true));
-    this.geometry.setAttribute('uv', new THREE.BufferAttribute(Float32Array.from(triUvs), 2));
-    this.geometry.setAttribute('surface', new THREE.BufferAttribute(surface, 1));
-    this.mesh.geometry = this.geometry;
+    const p = this.posed;
+    this.rig = this.base ? measureSkateRig(this.base, p.groups, p.baseX, p.baseY, p.baseZ) : null;
     this.render(this.targetPose());
   }
 
@@ -329,46 +266,10 @@ export class Avatar {
     return pose;
   }
 
-  /** Poses the composed model and writes positions + RS-style normals (smooth unless the face is flat). */
+  /** Poses the composed model (positions and RS-style normals). */
   private render(pose: Pose) {
     this.current = pose;
-    const { vx, vy, vz } = this;
-    vx.set(this.baseX);
-    vy.set(this.baseY);
-    vz.set(this.baseZ);
-    if (this.base && pose.size) applyPose(pose, this.base, this.origins, this.groups, vx, vy, vz);
-    const tris = this.tris;
-    const smooth = this.smooth.fill(0);
-    const faces = this.faces;
-    for (let t = 0; t < tris.length; t += 3) {
-      const a = tris[t], b = tris[t + 1], c = tris[t + 2];
-      // three axes: (x, -y, -z)
-      const abx = vx[b] - vx[a], aby = -(vy[b] - vy[a]), abz = -(vz[b] - vz[a]);
-      const acx = vx[c] - vx[a], acy = -(vy[c] - vy[a]), acz = -(vz[c] - vz[a]);
-      let nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-      const l = Math.hypot(nx, ny, nz) || 1;
-      nx /= l; ny /= l; nz /= l;
-      faces[t] = nx; faces[t + 1] = ny; faces[t + 2] = nz;
-      if (this.flat[t / 3]) continue;
-      for (const v of [a, b, c]) { smooth[v * 3] += nx; smooth[v * 3 + 1] += ny; smooth[v * 3 + 2] += nz; }
-    }
-    const pos = this.geometry.attributes.position.array as Float32Array;
-    const nor = this.geometry.attributes.normal.array as Float32Array;
-    for (let i = 0; i < tris.length; i++) {
-      const v = tris[i];
-      pos[i * 3] = vx[v] / 128;
-      pos[i * 3 + 1] = -vy[v] / 128;
-      pos[i * 3 + 2] = -vz[v] / 128;
-      const t = i - (i % 3);
-      let x = smooth[v * 3], y = smooth[v * 3 + 1], z = smooth[v * 3 + 2];
-      const l = Math.hypot(x, y, z);
-      if (this.flat[t / 3] || l === 0) { x = faces[t]; y = faces[t + 1]; z = faces[t + 2]; }
-      else { x /= l; y /= l; z /= l; }
-      nor[i * 3] = x; nor[i * 3 + 1] = y; nor[i * 3 + 2] = z;
-    }
-    this.geometry.attributes.position.needsUpdate = true;
-    this.geometry.attributes.normal.needsUpdate = true;
-    this.geometry.computeBoundingSphere();
+    this.posed.render(pose, this.base, this.origins);
   }
 }
 

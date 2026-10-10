@@ -1,4 +1,110 @@
-# Collaboration handoff — updated 2026-10-09
+# Collaboration handoff — updated 2026-10-10
+
+## Whole-world free roam (Claude, 2026-10-10) — "build the whole map to freeroam"
+
+The default map is now `gielinor`: map regions 33–60 × 39–64 (tiles 2112–3903 × 2496–4159, 1,792 × 1,664 tiles). That is the connected mainland from Castle Wars and the Gnome Stronghold to Port Phasmatys, and from Karamja and the desert to the top of the Wilderness. The scattered areas the cache keeps further north (regions 65+, such as Zanaris and Puro-Puro) are left out. Regions whose objects need XTEA keys we don't have (about 80, for example Ape Atoll) export terrain only. `misthalin` and `lumbridge` are still available through `?area=` and use the same format.
+
+**One exporter, block by block** (`tools/export-area.ts`, `npm run export:world -- <area>`; it replaces export-world, export-render, export-collision and export-minimap)
+- Each block of 4 × 4 regions loads with a one-region border, so terrain blending, corner heights and shadows are seamless across blocks. `LocBuilder.build(grid, density, inside)` emits geometry only for spawns inside the block; nearby outside spawns still shade its ground. `buildTerrain(..., rect)` builds only the block's tiles.
+- Each block is packed straight from memory into:
+  - render chunks (as before);
+  - per 16-tile cell: solid objects `<cx>_<cy>.bin`, terrain `.t.bin` and grind lines `.rails.json`;
+  - traversal, ground heights and a minimap tile.
+- Triangles go to the cell of their centre, clamped to the block, so blocks never share a file.
+- The collision and grind-line rules moved unchanged into `tools/world/collision-rules.ts` (`classifyLocs`). Rail ids now use absolute world tiles, so they are unique across the world.
+- Finished blocks are recorded in `work/world/<area>/blocks/`, and a rerun resumes from there (`--fresh` starts over). The last step joins:
+  - `render/manifest.json` and `collision/index.json`;
+  - `traversal.bin`;
+  - `minimap.json` and `minimap/overview.png`;
+  - `runes.json` (town runes are placed here, from all grind lines and the ground heights);
+  - `work/.../textures.json`, which `export-surfaces` now reads.
+- It also warns about teleports that land on water or void.
+- Lumbridge re-exported identically: 2,837,025 object triangles, 1,301,970 solid, 4,193 grind lines, 3,163 water tiles, in 11 s.
+
+**Streamed world format** (manifest `format: 2`, collision index `version: 2`)
+- Soups are 16-bit, which spans 512 tiles. Collision cell soups are therefore stored relative to their own corner minus 64 tiles (`cellOrigin`); `soupPositions` / `decodeSoup({ origin })` add the origin back.
+- `WorldCollision` holds static trees (training grounds, props) plus cells of `{ locs, terrain, rails }`. `terrainOnly` queries use only the cells' terrain. The `rails` property is the static list (park and props); cell grind lines are indexed into the rail grid as cells load and unload.
+- `CollisionStream` looks up only the cells near the point (the index has about 10k entries), fetches up to three files per cell, and evicts above 2.5 M triangles.
+- There is no `terrain.bin` or `rails.json` any more, so startup cost doesn't grow with the world.
+- The minimap draws the overview (1 px per tile) underneath and then the 1,024 px tiles in view, lazily loaded with an LRU of 16. The world map draws the overview.
+
+**Content**
+- 37 teleport spots in 8 regions (`Place.region`): 26 new, from Falador, Camelot, Ardougne, Yanille, Rellekka and Brimhaven to Canifis, Port Phasmatys and the Wilderness. Each has five challenges, and the teleport menu groups them by region and shows challenge progress.
+- `play.mjs` now checks and builds `gielinor`.
+- `tests/collision.test.ts` covers cell terrain, streamed grind lines and cell origins (98 tests).
+
+## Second footage pass (Claude, 2026-10-10) — 14.5 min recording plus an interview
+
+The user answered an interview after the footage:
+- Bonks felt too frequent: soften them.
+- Sketchy landings should bank the combo at reduced value.
+- Water should bank the combo, then put you on shore.
+- Cruising is fun, but it stalls when you get stuck (small plants and rocks, pinned on walls and fences, roofs and high spots out of reach), when you can't link combos, and when you can't tell what's going on or what the special does.
+- They want huge jumps and roofs like THPS and skate, a level system that unlocks skills, live key hints, and a game that is more forgiving by default.
+
+The footage also showed three clear bugs:
+- The camera clipped through the GE arches and pillar, the Varrock bank chandeliers, roofs, trees and walls.
+- You could ride off the edge of the map into the void (north of the GE and at Draynor).
+- Roofs and the Barbarian Village ground rendered white.
+
+Best moment: a 50k GE-steps combo that completed the GE Grandmaster challenge.
+
+**Fixes**
+- **White textures.** `export-surfaces` looked for `*.materials.bin` in `public/world`, but `export:world` writes them to `work/world/<area>`. So every texture first used after the Misthalin expansion (texture 309 alone covers 343k vertices) was missing from the strip. Those faces showed their white-lifted HD face colour untextured. It now scans `work/world` too: 349 textures are packed (was 251) and none are missing.
+- **Camera.** The RS shader has a see-through cutout (`cutCamera`/`cutTarget`/`cutRadius` in `rsUniforms`, per-material `cutout` option). It is a capsule from the camera to the rider's chest, 1.1 m radius widening to 1.65 m at the camera and tapering to nothing near the rider so the ground under the board stays. Inside it, world, park and prop surfaces dissolve with a 4×4 Bayer screen-door edge at most 0.22 m wide, and everything within 0.8 m of the lens is cut. The avatar and board never cut. With that in place, `ChaseCamera` no longer lifts or pulls in for walls; it only stays 0.6 m above the terrain. `placeCamera` is kept (tested) but unused.
+- **Map edge.** `WorldCollision.inBounds` is true inside the traversal map, or where a static non-terrain tree (the training grounds) has geometry. The skater's `edgeAt` treats out-of-bounds like water or holes on the ground (glance along it). In the air it is an invisible wall you slide along ("Edge of the map").
+
+**Unsticking**
+- **Clutter.** Rocks, stones, stumps, logs, pots and similar debris up to 0.9 m tall and 2.6 m across are ridden through, plus anything else under 0.5 m and 2 m across. Skateable names (block, ledge, step, bench, crate, stall...) and any flat-topped `blockTop` object stay solid. Plants of any size are passable (`shrub|plant|weed|vine|ivy|cactus|sapling...` added). Collision `STEP` is 0.12 → 0.18 m. Misthalin skips 2,927 clutter objects and has 16,498 grind segments.
+- **Walls.** Riding or pushing straight at a wall (slide under 45% of your speed) turns you along it toward the side you steer or drift. Bonk is now above 6.5 m/s into the wall (×0.8 speed); a bail needs over 11.
+- **Water and edges.** A head-on stop at water or an edge swings the board toward the nearest open cardinal direction, so pushing gets you moving.
+- **Perching.** Airborne, falling and not moving down for 0.6 s means you're perched on something too steep to stand on; you are rescued ("Stuck up there") instead of hovering for 6 s until "Out of bounds".
+
+**Combos and landings**
+- `LANDING_WINDOW` is 0.3 → 0.6 s, and an ollie inside it links the next air (`jump()` no longer banks). `REPEAT` scores a trick 25% less per repeat in one combo, down to a quarter (`repeats`, cleared with the combo), so ollie chains can't farm.
+- `landingFault` finishes a flip that is at least half done. Sketchy landings, lost manual balance and falling off a grind call `sketchy()`: a wobble that banks the combo at `LANDING.sketchy` (half), with a `land` event flagged `sketchy` (trick challenges ignore those; combo challenges count them) and a `sketchy` event.
+- Messages say why: "Landed mid-kickflip", "Landed sideways", "Fell off the grind · leaned too far right"...
+- `bail(reason, relocate, keep)`: water, holes, perching and out of bounds bank the open combo first ("Splash! · back to dry ground · combo banked +800"). Relocating bails last 1.1 s.
+- Easier balance: grind wobble grows over 5 s instead of 3, the manual drift is gentler, and both scale with `abilities.steady`. `GRIND_CATCH` is wider (reach 0.6, below 0.35, above 0.6).
+- A heavy landing needs more than 17 m/s (about 10 m).
+
+**Big air and unlocks**
+- `OLLIE` is 4.3 + 3.1 × charge (was +2), times `abilities.pop`.
+- Wallplant (`tryWallplant`): pop in the air with a wall within 0.4 m ahead, or touched within 0.5 s. Your line reflects off the wall, you rise at 6.4 × pop, and there is a 0.35 s cooldown, so you can chain up between walls.
+- Agility leap (`tryLeap`): pop in the air at 6.2 × pop, `abilities.leaps` per air. Leaps reset on the ground, on grinds and on wallrides. When falling within 0.6 m of the ground, a pop is a buffered landing ollie instead. A wallie is now 5 × pop.
+- `SkateAbilities` / `BASE_ABILITIES` live in skater.ts; `UNLOCKS` and `abilitiesFor(level)` in skill.ts (levels 5–99, table in the README). main.ts reapplies them when the level changes.
+- `Career.unlocked` queues unlocks from level-ups for the UI's "NEW SKILL" card. The pause menu shows the skill guide.
+- A `special` event chimes when the bar fills; the special's help and README text explain its value.
+
+**Clarity**
+- `HintCoach` (hints.ts) picks one hint at 10 Hz by priority: link window, grind, manual, wallride, then in the air wallplant / leap / special / tricks, then on the ground the ledge ahead (reachable by ollie, or by ollie and leap), special, wall beside you, push, Surge.
+- Basic hints have per-session budgets; urgent ones cut in. A hint sticks for 1.2 s. The profile's `hints` flag (default on) is toggled in the pause footer.
+- The HUD shows the hint as key caps (`#hint-line`) and the link window as a gold bar under the combo.
+
+**Tooling**
+- `__scape.frames(n)` steps the game loop by hand (`?test=1`), because the hidden preview pane throttles requestAnimationFrame.
+- `fuzz-skater.ts` takes `LEVEL=` (abilities) and `WHERE=1` (bail locations).
+
+**Validation**
+- 96 tests (new `tests/fun.test.ts`), typecheck and production build pass.
+- Fuzz at levels 1, 30, 60 and 99 on both maps found no physics issues. Bails fell from about 310 to 26–53 per 27 simulated minutes, mostly water splashes that bank the combo. Grinds roughly doubled and banked combos went from about 400 to 550–760.
+- Browser: Varrock roofs show slate textures; with the camera inside a building the rider stays visible through it; the skill guide, level-30 unlock card, leap hint and link bar all appeared.
+
+## Footage fun pass (Claude, 2026-10-10) — the user's 278 s gameplay recording, "fix what's not good, enhance what is good, fun first"
+
+What the footage showed: a fall loop in the Grand Exchange's underwall tunnel, frequent Bumped/Hard impact stops, unwanted "Launch" mini-airs off terrain followed by sketchy landings, "Rolling back fakie" spam on dunes, messages that lingered, the camera inside the rider or pressed against walls, and the Duel Arena's blocks bumping the rider instead of being grindable. What worked: teleport hopping, wallride-into-grind combos and challenge completions.
+
+- **Holes.** `export:world` marks tiles with no terrain as voids (traversal 2; minimap dark): 116 in Misthalin, 37 in Lumbridge. `groundAt(..., terrainOnly)` returns null over them. The edge says "Hole ahead"; falling 4 m with nothing below bails at once ("Fell into a hole"), and rescues return to `safeTrail[0]`, a spot from up to 3 s back (one every 0.5 s, 6 kept, never on water). A sweep of all 116 voids from four directions, rolling and ollieing, never left the rider falling.
+- **Water.** Shorelines glance like walls: a grounded step into water slides along the free axis (tile edges are axis-aligned), turns the board along the shore and keeps most of the speed. Only a head-on approach stops you. A rider who still ends up grounded on water (off a rail end, a wall slide) can roll out, and is rescued after 0.6 s (`wetClock`). Before this, such riders were boxed in by "Water ahead" in every direction.
+- **Slopes.** `ROLL.slopeGravity` 9.8 → 7 and coasting friction 0.55 → 0.42. Push grip fades from 0.3 to 0.5 rad of uphill pitch, so you roll back off a steep bank instead of sticking to its face. Ramps launch only if they throw you at ≥ 2 m/s (`ROLL.minLaunch`), so hill crests don't. There is no roll-back message.
+- **Air control.** `popped` marks an air that began with an ollie or a launch. Rolling off a ledge, A/D carves the line (heading and airHeading together) instead of spinning, so the landing stays clean. `land()` snaps `heading` onto `airHeading`, so a slightly crooked clean landing keeps your line. Sketchy needs alignment > 0.97.
+- **Wall hits** (`IMPACT`). Bail above 10 m/s into the wall (was 7.8), Bonk above 4.5 (×0.6 speed, the combo survives, a `bonk` event with a thud and camera shake, message rate-limited to 2 s); scrapes are free. Misthalin fuzz hard-impact bails went from about 24–30 per 40 episodes to 0–2.
+- **Block-top ledges.** `export-collision` adds the top edges of type 10/11 objects 0.35–1.6 m tall (footprint diagonal ≤ 3.5 m, flat top ≥ 45% of it; not doors, trees, statues, signs and so on) as grind lines with ids `...-e<k>`. Misthalin: 16,462 segments; Lumbridge: 4,193. The clutter rule no longer drops type-10 floor pieces (6,266 → 2,627 skipped).
+- **Camera.** Automatic mode probes lifts of 0/1.5/3/4.5 m with `placeCamera` and eases up over walls. If placement ends within 1.3 m of the rider, it moves above and behind. Bonks and bails shake it.
+- **Messages** show for 3 s, then fade out (`strong.idle`).
+- **Town runes** (`runes.ts`). Five per spot (Air, Water, Earth, Fire, Cosmic), placed deterministically above rails ≥ 2.5 m long within 45 m: one 1.4–3 m up, the rest 0.4–1.4 m, ≥ 9 m apart, 0.85 m above the line. Touching one gives `RUNE_XP.each` (1,500), and all five give `RUNE_XP.set` (15,000). Saved in `profile.townRunes`, white on the minimap, and counted on the quest card.
+- **Combo ratings** (`comboRating` in ui.ts): Bronze 1k … Third-age 150k, shown with each banked combo. **Fireworks** (`fireworks.ts`) burst on challenges and level-ups.
+- Validation: 83 tests; typecheck; production build; Misthalin and Lumbridge fuzz with several seeds shows no physics issues. The only remaining "stuck" samples are random-steer riders pushing head-on into walls. Browser checks: a Lumbridge rune collected by grinding, Lumbridge Medium completed with fireworks, a shoreline glance on the River Lum, and 24 runs at 9 m/s around Lumbridge castle with bonks and no wall bails.
 
 ## Polish pass (Claude, 2026-10-09) — "small stones on the ground cause falls… make it the best"
 

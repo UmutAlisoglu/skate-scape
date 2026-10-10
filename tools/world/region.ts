@@ -68,7 +68,7 @@ export class TileGrid {
     return a * (1 - fy) + b * fy;
   }
 
-  load(cache: CacheStore, xteas: Map<number, Xtea>) {
+  load(cache: CacheStore, xteas: Map<number, Xtea>, warn: (message: string) => void = console.warn) {
     for (let ry = 0; ry < this.regionsH; ry++) {
       for (let rx = 0; rx < this.regionsW; rx++) {
         const regionX = this.regionX0 + rx;
@@ -95,7 +95,7 @@ export class TileGrid {
         const key = xteas.get((regionX << 8) | regionY);
         const lData = cache.file(ARCHIVE.MAPS, lGroup, 0, key);
         if (lData) this.readLocs(lData, rx * 64, ry * 64);
-        else console.warn(`  locs for region ${regionX},${regionY} unavailable (missing/invalid XTEA key)`);
+        else warn(`  locs for region ${regionX},${regionY} unavailable (missing/invalid XTEA key)`);
       }
     }
   }

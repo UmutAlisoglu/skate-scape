@@ -16,6 +16,10 @@ export const rsUniforms = {
   fogColor: { value: gammaColor(0xc8c0a8) },
   fogNear: { value: 30 },
   fogFar: { value: 62 },
+  // see-through cutout: world geometry between the camera and the rider dissolves (set every frame by main.ts)
+  cutCamera: { value: new THREE.Vector3() },
+  cutTarget: { value: new THREE.Vector3() },
+  cutRadius: { value: 0 },
 };
 
 export interface Surfaces {
@@ -74,6 +78,8 @@ export interface RsMaterialOptions {
   transparent?: boolean;
   opacity?: number;
   side?: THREE.Side;
+  /** dissolves where it hides the rider from the camera (world geometry, not the rider) */
+  cutout?: boolean;
 }
 
 const vertexShader = /* glsl */ `
@@ -86,6 +92,7 @@ varying vec3 vNormalW;
 varying vec2 vUvRS;
 varying float vLayer;
 varying float vFogDepth;
+varying vec3 vWorldRS;
 void main() {
   vec4 local = vec4(position, 1.0);
   vec3 objectNormal = normal;
@@ -94,6 +101,7 @@ void main() {
   objectNormal = mat3(instanceMatrix) * objectNormal;
 #endif
   vec4 world = modelMatrix * local;
+  vWorldRS = world.xyz;
   vNormalW = normalize(mat3(modelMatrix) * objectNormal);
   vec3 c = baseColor;
   vAlpha = 1.0;
@@ -127,13 +135,35 @@ uniform vec3 fogColor;
 uniform float fogNear;
 uniform float fogFar;
 uniform float opacity;
+uniform float cutout;
+uniform vec3 cutCamera;
+uniform vec3 cutTarget;
+uniform float cutRadius;
+varying vec3 vWorldRS;
 varying vec3 vColorRS;
 varying float vAlpha;
 varying vec3 vNormalW;
 varying vec2 vUvRS;
 varying float vLayer;
 varying float vFogDepth;
+const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 void main() {
+  if (cutout > 0.5 && cutRadius > 0.0) {
+    // a capsule from the camera to the rider's chest, narrowing toward the rider so the ground under the
+    // board stays; inside it the surface dissolves (screen-door dither at the edge), so walls, arches, roofs,
+    // trees and chandeliers never hide the rider
+    vec3 seg = cutTarget - cutCamera;
+    float t = clamp(dot(vWorldRS - cutCamera, seg) / max(dot(seg, seg), 0.0001), 0.0, 1.0);
+    // a little wider at the camera end, where nearby walls fill the screen
+    float r = cutRadius * (1.0 + 0.5 * (1.0 - t)) * (1.0 - smoothstep(0.62, 0.97, t));
+    float d = distance(vWorldRS, cutCamera + seg * t);
+    if (distance(vWorldRS, cutCamera) < 0.8) discard;
+    if (d < r) {
+      ivec2 p = ivec2(mod(gl_FragCoord.xy, 4.0));
+      float edge = clamp((r - d) / min(r * 0.3, 0.22), 0.0, 1.0);
+      if (edge > (BAYER[p.x + p.y * 4] + 0.5) / 16.0) discard;
+    }
+  }
   vec3 n = normalize(vNormalW);
   if (!gl_FrontFacing) n = -n;
   float light = ambient + diffuse * dot(n, lightDir);
@@ -192,6 +222,7 @@ export function rsMaterial(options: RsMaterialOptions = {}): THREE.ShaderMateria
       fixedLayer: { value: options.textureId !== undefined ? layerOf(surfaces, options.textureId) : 0 },
       baseColor: { value: gammaColor(options.color ?? 0xffffff) },
       opacity: { value: options.opacity ?? 1 },
+      cutout: { value: options.cutout ? 1 : 0 },
     },
   });
 }

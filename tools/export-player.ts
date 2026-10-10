@@ -2,11 +2,11 @@
 // Usage: npm run export:player
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { CacheStore } from './cache/store.ts';
-import { Defs, ARCHIVE } from './cache/defs.ts';
-import { Model } from './cache/model.ts';
+import { Defs } from './cache/defs.ts';
+import { PartBuilder } from './cache/part-model.ts';
 import { PlayerDefs, decodeFrame } from './cache/player-defs.ts';
 import { SOURCE_BODY_COLORS, DESTINATION_BODY_COLORS, SOURCE_SKIN_COLORS, DESTINATION_SKIN_COLORS } from './cache/player-colors.ts';
-import type { PartModel, KitDef, ItemDef, Wardrobe, AnimData } from '../src/shared/player-data.ts';
+import type { KitDef, ItemDef, Wardrobe, AnimData } from '../src/shared/player-data.ts';
 
 const CACHE_DIR = 'vendor/2009scape-cache';
 const OUT_DIR = 'public/player';
@@ -38,49 +38,9 @@ const cache = new CacheStore(CACHE_DIR);
 const defs = new Defs(cache);
 const pdefs = new PlayerDefs(cache);
 
-const models = new Map<number, Model | null>();
-const textureBrightness: Record<number, number> = {};
-function model(id: number): Model | null {
-  if (!models.has(id)) {
-    const data = cache.file(ARCHIVE.MODELS, id);
-    models.set(id, data ? Model.decode(data) : null);
-  }
-  const m = models.get(id);
-  return m ? m.clone() : null;
-}
-
-function part(ids: number[], recolS: number[], recolD: number[], retexS: number[], retexD: number[], off?: [number, number, number]): PartModel | null {
-  const parts = ids.map(model);
-  if (parts.length === 0 || parts.some((p) => !p)) return null;
-  const m = parts.length === 1 ? parts[0]! : Model.merge(parts as Model[]);
-  if (off && (off[0] || off[1] || off[2])) m.translate(off[0], off[1], off[2]);
-  for (let i = 0; i < recolS.length; i++) m.recolor(recolS[i], recolD[i]);
-  for (let i = 0; i < retexS.length; i++) m.retexture(retexS[i], retexD[i]);
-  return toPart(m);
-}
-
-function toPart(m: Model): PartModel {
-  const v: number[] = [];
-  for (let i = 0; i < m.vertexCount; i++) v.push(m.vx[i], m.vy[i], m.vz[i]);
-  const t: number[] = [];
-  for (let i = 0; i < m.triangleCount; i++) t.push(m.ta[i], m.tb[i], m.tc[i]);
-  const c = Array.from(m.colors);
-  const p: PartModel = { v, b: m.vertexBones ? Array.from(m.vertexBones) : new Array(m.vertexCount).fill(0), t, c };
-  if (m.info) p.i = Array.from(m.info, (x) => x & 3);
-  if (m.alpha) p.a = Array.from(m.alpha);
-  if (m.textures) {
-    // Keep real textures (drawn by the RS shader) with the client's per-face texture coordinates.
-    const cfg = defs.textures;
-    const x = Array.from(m.textures, (tex) => (tex >= 0 && tex < cfg.count && cfg.defined[tex] ? tex : -1));
-    if (x.some((tex) => tex >= 0)) {
-      const uvs = m.uvs();
-      p.x = x;
-      p.u = Array.from(uvs, (value) => Math.round(value * 1000) / 1000);
-      for (const tex of x) if (tex >= 0) textureBrightness[tex] = cfg.brightness[tex];
-    }
-  }
-  return p;
-}
+const parts = new PartBuilder(cache, defs);
+const textureBrightness = parts.textureBrightness;
+const part = parts.part.bind(parts);
 
 // ---- body kits ----
 const kits: KitDef[] = [];

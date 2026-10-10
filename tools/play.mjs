@@ -10,7 +10,7 @@ process.chdir(root);
 
 // Commands go through the shell as one string (npm and npx are .cmd scripts on Windows).
 function run(command) {
-  // the full Misthalin export holds ~10 million triangles in memory at once
+  // the world export builds a block of 16 regions (a few million triangles) at a time
   const env = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=12288`.trim() };
   const result = spawnSync(command, { stdio: 'inherit', shell: true, env });
   if (result.status !== 0) {
@@ -24,33 +24,33 @@ if (!existsSync('node_modules')) {
   run('npm install');
 }
 
-// Everything the game loads at runtime (the default map is greater Misthalin).
-const AREA = 'misthalin';
+// Everything the game loads at runtime (the default map is the whole of Gielinor).
+const AREA = 'gielinor';
 const required = [
   `public/world/${AREA}/manifest.json`,
-  `public/world/${AREA}/terrain.bin`,
   `public/world/${AREA}/collision/index.json`,
   `public/world/${AREA}/traversal.bin`,
-  `public/world/${AREA}/rails.json`,
+  `public/world/${AREA}/runes.json`,
   `public/world/${AREA}/render/manifest.json`,
-  `public/world/${AREA}/minimap.png`,
+  `public/world/${AREA}/minimap.json`,
   'public/player/wardrobe.json',
   'public/player/anims.json',
   'public/surfaces/manifest.json',
   'public/surfaces/textures.png',
 ];
 const missing = required.filter((file) => !existsSync(file));
-// render chunks from before the large-map format (version 3) need re-exporting too
-const renderManifest = `public/world/${AREA}/render/manifest.json`;
-if (existsSync(renderManifest) && JSON.parse(readFileSync(renderManifest, 'utf8')).version !== 3) missing.push(`${renderManifest} (old format)`);
+// maps from before the streamed world format (2) need re-exporting too
+const worldManifest = `public/world/${AREA}/manifest.json`;
+if (existsSync(worldManifest) && JSON.parse(readFileSync(worldManifest, 'utf8')).format !== 2) missing.push(`${worldManifest} (old format)`);
 if (missing.length) {
   console.log(`Game assets are missing (${missing.join(', ')}).`);
   if (!existsSync('vendor/2009scape-cache/main_file_cache.dat2')) {
     console.error('The 2009scape cache is needed to build them: see "Setup" in README.md.');
     process.exit(1);
   }
-  console.log('Building them from the 2009scape cache (takes a few minutes)...');
-  for (const step of ['export:world', 'export:player', 'export:render', 'export:collision', 'export:minimap']) run(`npm run ${step} -- ${AREA}`);
+  console.log('Building them from the 2009scape cache (the whole world takes 10-20 minutes; it resumes if interrupted)...');
+  run(`npm run export:world -- ${AREA}`);
+  run('npm run export:player');
   run('npm run export:surfaces');
 }
 

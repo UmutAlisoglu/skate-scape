@@ -48,20 +48,12 @@ for (const line of readFileSync(join(WORK, 'out/flags.txt'), 'utf8').trim().spli
   flags.set(id, { blend });
 }
 
-// 3. Collect the textures the exported world and wardrobe reference.
+// 3. Collect the textures the exported worlds and wardrobe reference (export:world lists each area's in
+// work/world/<area>/textures.json).
 const used = new Set<number>();
-if (existsSync('public/world')) {
-  for (const area of readdirSync('public/world')) {
-    for (const name of ['terrain', 'locs']) {
-      const file = join('public/world', area, `${name}.materials.bin`);
-      if (!existsSync(file)) continue;
-      const refs = readFileSync(file);
-      for (let i = 0; i < refs.length; i += 2) {
-        const v = refs.readUInt16LE(i);
-        if (v) used.add(v - 1);
-      }
-    }
-  }
+if (existsSync('work/world')) for (const area of readdirSync('work/world')) {
+  const file = join('work/world', area, 'textures.json');
+  if (existsSync(file)) for (const id of JSON.parse(readFileSync(file, 'utf8')) as number[]) used.add(id);
 }
 if (existsSync('public/player/wardrobe.json')) {
   const text = readFileSync('public/player/wardrobe.json', 'utf8');

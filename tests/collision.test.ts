@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { WorldCollision } from '../src/world/collision.ts';
+import { decodeCell, WorldCollision } from '../src/world/collision.ts';
+import { writeSoupCorner } from '../src/shared/soup.ts';
+import type { CollisionIndex } from '../src/world/load.ts';
 import { Skater } from '../src/game/skater.ts';
 
 function geometryWorld() {
@@ -30,7 +32,7 @@ test('diagonal movement slides along walls while remaining outside them', () => 
 test('ground sampling stays below roofs and handles edges of loaded geometry', () => {
   const floor = new THREE.PlaneGeometry(10, 10).rotateX(-Math.PI / 2);
   const roof = new THREE.BoxGeometry(4, 0.1, 4).translate(0, 3, 0);
-  const world = new WorldCollision([floor, roof]);
+  const world = new WorldCollision(); world.setCell('0_0', { terrain: floor, locs: roof, rails: [] });
   assert.equal(world.groundAt(0, 0, 0.36), 0);
   assert.ok(Math.abs(world.groundAt(0, 0, 4)! - 3.05) < 0.001);
   assert.equal(world.groundAt(20, 20, 4), null);
@@ -59,9 +61,36 @@ test('a rolling skater clears a small curb without a bail or abrupt stop', () =>
 test('traversal blocks water but permits a solid bridge above it', () => {
   const floor = new THREE.PlaneGeometry(6,6).rotateX(-Math.PI/2);
   const bridge = new THREE.BoxGeometry(0.8,0.1,1).translate(1.5,1,-0.5);
-  const world = new WorldCollision([floor,bridge]);
+  const world = new WorldCollision(); world.setCell('0_0', { terrain: floor, locs: bridge, rails: [] });
   world.setTraversal(3,3,new Uint8Array(9).fill(1));
   assert.equal(world.canRideAt(0.5,-0.5,0),false);
   assert.equal(world.canRideAt(1.5,-0.5,1.05),true);
   assert.equal(world.canRideAt(-10,-10,0),true);
+});
+
+test('streamed cells bring their grind lines and take them away again; static rails stay', () => {
+  const world = new WorldCollision();
+  world.rails = [{ id: 'park', name: 'Park rail', a: { x: -50, y: 0.5, z: 0 }, b: { x: -48, y: 0.5, z: 0 } }];
+  const fence = { id: 'fence', name: 'Fence', a: { x: 1, y: 1, z: -1 }, b: { x: 6, y: 1, z: -1 } };
+  world.setCell('0_0', { terrain: new THREE.PlaneGeometry(16, 16).rotateX(-Math.PI / 2).translate(8, 0, -8), locs: null, rails: [fence] });
+  assert.deepEqual(world.railsNear(3, -1).map((r) => r.id), ['fence']);
+  assert.ok(Math.abs(world.groundAt(4, -4, 1, true)!) < 1e-9, 'the cell carries the terrain');
+  world.setCell('0_0', null);
+  assert.deepEqual(world.railsNear(3, -1), []);
+  assert.equal(world.groundAt(4, -4, 1, true), null);
+  assert.deepEqual(world.railsNear(-49, 0).map((r) => r.id), ['park']);
+});
+
+test('collision cells far out on a big map are stored relative to their own corner', () => {
+  const index: CollisionIndex = { version: 2, cell: 16, margin: 64, cells: [] };
+  const [cx, cy] = [100, 90], ox = (cx * 16 - 64) * 128, on = (cy * 16 - 64) * 128;
+  // one triangle around tile (1605, 1445), 1,600 tiles from the corner: too far for an absolute 16-bit soup
+  const corners = [[1605, 1445], [1606, 1445], [1605, 1446]];
+  const buffer = new ArrayBuffer(4 + 22), view = new DataView(buffer);
+  view.setUint32(0, 1, true); new Uint8Array(buffer, 4 + 18, 4).fill(255); // opaque
+  corners.forEach(([x, y], i) => writeSoupCorner(view, i, x * 128 - ox, 256, -(y * 128 - on)));
+  const cell = decodeCell(index, [cx, cy, 1, 0, 0], { locs: buffer });
+  const p = cell.locs!.getAttribute('position');
+  assert.deepEqual([p.getX(0), p.getY(0), p.getZ(0)], [1605, 2, -1445]);
+  assert.deepEqual([p.getX(2), p.getZ(2)], [1605, -1446]);
 });

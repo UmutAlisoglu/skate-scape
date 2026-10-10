@@ -3,6 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 // Development-only, loopback diagnostics from the actual player browser.
 export default defineConfig({
+  // the exported world is tens of thousands of files (gigabytes for the whole of Gielinor): watching it, the
+  // exporter's work files or a production build would stall the dev server for minutes
+  server:{watch:{ignored:['**/public/world/**','**/public/npcs/**','**/public/player/**','**/public/surfaces/**','**/work/**','**/dist/**','**/vendor/**']}},
   plugins:[{
     name:'local-game-performance',
     configureServer(server) {

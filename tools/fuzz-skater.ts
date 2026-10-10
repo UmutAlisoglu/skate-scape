@@ -3,22 +3,38 @@
 // grinds far from their rail, and skaters stuck while pushing.
 // Usage: npx tsx tools/fuzz-skater.ts [episodes=40] [seconds=40] [seed=1]
 import { readFileSync } from 'node:fs';
-import { decodeSoup, type CollisionIndex } from '../src/world/load.ts';
-import { WorldCollision } from '../src/world/collision.ts';
+import { existsSync } from 'node:fs';
+import { type CollisionIndex } from '../src/world/load.ts';
+import { decodeCell, WorldCollision } from '../src/world/collision.ts';
 import { Skater, type Rail, type SkateInput } from '../src/game/skater.ts';
+import { abilitiesFor } from '../src/game/skill.ts';
+import { placesIn } from '../src/game/places.ts';
 
 const [episodes = 40, seconds = 40, seed = 1] = process.argv.slice(2).map(Number);
 const area = process.env.AREA ?? 'lumbridge';
+// LEVEL=60 fuzzes with that Skateboarding level's abilities (wallplant, Agility leap, bigger pops...)
+const abilities = abilitiesFor(Number(process.env.LEVEL ?? 1));
 // TRACE="episode,from,to" prints every frame of one episode between two times
 const trace = process.env.TRACE?.split(',').map(Number);
 const base = `public/world/${area}`;
 const buffer = (file: string) => { const b = readFileSync(`${base}/${file}`); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); };
 const manifest = JSON.parse(readFileSync(`${base}/manifest.json`, 'utf8'));
-const terrain = decodeSoup(buffer('terrain.bin'), 'terrain', { positionsOnly: true });
-const world = new WorldCollision([terrain.opaque]);
+const world = new WorldCollision();
 const index = JSON.parse(readFileSync(`${base}/collision/index.json`, 'utf8')) as CollisionIndex;
-for (const [cx, cy] of index.cells) world.setCell(`${cx}_${cy}`, decodeSoup(buffer(`collision/${cx}_${cy}.bin`), 'collision', { positionsOnly: true }).opaque);
-world.rails = JSON.parse(readFileSync(`${base}/rails.json`, 'utf8')) as Rail[];
+// the cells within RANGE m of the spawn (the whole world doesn't fit in memory at once)
+// PLACE=falador fuzzes around a teleport spot instead of the map's spawn
+const place = process.env.PLACE ? placesIn(manifest.baseTile, manifest.sizeTiles).find((p) => p.id === process.env.PLACE) : null;
+if (process.env.PLACE && !place) throw new Error(`no place ${process.env.PLACE} on this map`);
+const start: [number, number] = place ? [Math.floor(place.x), Math.floor(-place.z)] : manifest.spawn;
+const range = Number(process.env.RANGE ?? 150), [homeX, homeY] = start;
+for (const entry of index.cells) {
+  const [cx, cy] = entry, key = `${cx}_${cy}`, file = (suffix: string) => `collision/${key}${suffix}`;
+  if (Math.hypot((cx + 0.5) * index.cell - homeX, (cy + 0.5) * index.cell - homeY) > range) continue;
+  world.setCell(key, decodeCell(index, entry, {
+    locs: entry[2] ? buffer(file('.bin')) : undefined, terrain: entry[3] ? buffer(file('.t.bin')) : undefined,
+    rails: entry[4] && existsSync(`${base}/${file('.rails.json')}`) ? JSON.parse(readFileSync(`${base}/${file('.rails.json')}`, 'utf8')) as Rail[] : undefined,
+  }));
+}
 world.setTraversal(manifest.sizeTiles[0], manifest.sizeTiles[1], new Uint8Array(readFileSync(`${base}/traversal.bin`)));
 
 let state = seed >>> 0 || 1;
@@ -33,7 +49,7 @@ const report = (kind: string, detail: string) => {
 };
 const tile = (p: { x: number; z: number }) => `tile ${manifest.baseTile[0] + Math.floor(p.x)},${manifest.baseTile[1] + Math.floor(-p.z)}`;
 
-const [sx, sy] = manifest.spawn;
+const [sx, sy] = start;
 const spawns: { x: number; y: number; z: number }[] = [];
 const home = { x: sx + 0.5, y: world.groundAt(sx + 0.5, -(sy + 0.5), 30, true) ?? 0, z: -(sy + 0.5) };
 spawns.push(home);
@@ -49,9 +65,9 @@ for (let attempts = 0; spawns.length < episodes; attempts++) {
 
 const dt = 1 / 60;
 let frames = 0, bails = 0, grinds = 0, landed = 0;
-const causes = new Map<string, number>();
+const causes = new Map<string, number>(), rare = new Map<string, string[]>();
 for (const [episode, spawn] of spawns.entries()) {
-  const skater = new Skater(world, spawn);
+  const skater = new Skater(world, spawn); skater.abilities = { ...abilities };
   skater.reset(spawn, random() * Math.PI * 2);
   let steer = 0, push = true, hold = 0, stuck = 0, crouch = 0, manualTime = 0;
   let previousY = skater.position.y, previousPhase = skater.phase;
@@ -66,7 +82,7 @@ for (const [episode, spawn] of spawns.entries()) {
       manual: manualTime > 0, grind: random() < 0.3,
     };
     skater.update(dt, input);
-    for (const event of skater.drainEvents()) { if (event.type === 'bail') { bails++; const cause = skater.message.split(' · ')[0]; causes.set(cause, (causes.get(cause) ?? 0) + 1); } if (event.type === 'grind') grinds++; if (event.type === 'land') landed++; }
+    for (const event of skater.drainEvents()) { if (event.type === 'bail') { bails++; const cause = skater.message.split(' · ')[0]; causes.set(cause, (causes.get(cause) ?? 0) + 1); const p = skater.position, list = rare.get(cause) ?? []; if (list.length < 2) list.push(`episode ${episode} t=${(f * dt).toFixed(2)} ${tile(p)} (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`); rare.set(cause, list); } if (event.type === 'grind') grinds++; if (event.type === 'land') landed++; }
     const p = skater.position;
     if (trace && episode === trace[0] && f * dt >= trace[1] && f * dt <= trace[2]) console.log(`t=${(f * dt).toFixed(3)} ${skater.phase} p=(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, ${p.z.toFixed(3)}) speed ${skater.speed.toFixed(2)} vy ${skater.verticalSpeed.toFixed(2)} heading ${skater.heading.toFixed(2)} grounded ${skater.grounded} input push=${input.push} steer=${input.steer.toFixed(2)} pop=${input.pop}`);
     const where = `episode ${episode} t=${(f * dt).toFixed(2)} ${tile(p)} (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}) ${skater.phase}`;
@@ -90,6 +106,7 @@ for (const [episode, spawn] of spawns.entries()) {
 }
 
 console.log(`bails by cause: ${[...causes].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ${n}`).join(', ')}`);
+if (process.env.WHERE) for (const [cause, list] of rare) console.log(`  ${cause}: ${list.join(' | ')}`);
 console.log(`${spawns.length} episodes, ${(frames / 60 / 60).toFixed(1)} minutes simulated: ${grinds} grinds, ${landed} banked combos, ${bails} bails/stumbles`);
 if (!issues.size) console.log('No issues found.');
 for (const [kind, { count, samples }] of issues) {

@@ -40,10 +40,17 @@ export class ChaseCamera {
     }
     this.previous.set(position.x, position.y, position.z);
     this.controls.target.lerp(this.target, 1 - Math.exp(-14 * dt)); this.controls.update();
-    this.camera.fov += ((62 + speed * 0.9) - this.camera.fov) * (1 - Math.exp(-4 * dt));
+    this.camera.fov += ((62 + Math.min(speed, 30) * 0.9) - this.camera.fov) * (1 - Math.exp(-4 * dt));
     this.camera.updateProjectionMatrix();
     this.desired.copy(this.camera.position);
-    collision.placeCamera(this.controls.target, this.desired, this.camera.position);
+    // walls, roofs, arches and trees between the camera and the rider dissolve (the RS shader's cutout), so the
+    // camera keeps its distance instead of jumping in or climbing over them; it only stays above the terrain
+    const terrain = collision.groundAt(this.camera.position.x, this.camera.position.z, this.camera.position.y + 20, true);
+    if (terrain !== null && this.camera.position.y < terrain + 0.6) this.camera.position.y = terrain + 0.6;
+    // never closer than this to the rider (inside the cape is all black): look down from above instead
+    if (this.camera.position.distanceTo(this.controls.target) < 1.3) {
+      this.camera.position.set(this.controls.target.x + Math.sin(heading) * 0.7, this.controls.target.y + 1.8, this.controls.target.z + Math.cos(heading) * 0.7);
+    }
   }
   restore() { this.camera.position.copy(this.desired); }
 }

@@ -64,3 +64,29 @@ test('completing a challenge awards its tier XP once; level-ups get the RS congr
   const old = readProfile(JSON.stringify({ version: 1, bestRun: 50, tricks: ['Ollie'] }));
   assert.equal(old.xp, 0); assert.deepEqual(old.challenges, []); assert.equal(old.bestRun, 50);
 });
+
+test('town runes: five spread-out spots above grind lines near the town, one of them up high', async () => {
+  const { placeRunes } = await import('../src/game/runes.ts');
+  const place = { id: 'testtown', name: 'Test town', spell: '', tile: [0, 0] as [number, number], blurb: '', region: '', x: 0, z: 0 };
+  const rails = [];
+  for (let i = 0; i < 40; i++) {
+    const a = (i / 40) * Math.PI * 2, r = 10 + (i % 4) * 8, x = Math.cos(a) * r, z = Math.sin(a) * r, y = i % 7 === 0 ? 2.2 : 0.9;
+    rails.push({ id: `r${i}`, name: 'Ledge', a: { x, y, z }, b: { x: x + 3, y, z } });
+  }
+  const runes = placeRunes(place, rails, () => 0);
+  assert.equal(runes.length, 5);
+  for (const a of runes) for (const b of runes) if (a !== b) assert.ok(Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z) >= 9);
+  assert.ok(runes.some((r) => r.position.y > 2.5), 'one high rune');
+  assert.deepEqual(runes.map((r) => r.id), placeRunes(place, rails, () => 0).map((r) => r.id), 'the same spots every time');
+});
+
+test('finding town runes gives XP each and a bonus for the set of five', () => {
+  const career = new Career(undefined, 'test');
+  for (let i = 1; i <= 4; i++) career.collectTownRune(`t-rune-${i}`, 'Air rune', 'Test town', i, 5);
+  assert.equal(career.profile.xp, 6000);
+  career.collectTownRune('t-rune-5', 'Air rune', 'Test town', 5, 5);
+  assert.equal(career.profile.xp, 6000 + 1500 + 15000);
+  assert.match(career.toast, /All 5 Test town runes/);
+  career.collectTownRune('t-rune-5', 'Air rune', 'Test town', 5, 5);
+  assert.equal(career.profile.xp, 22500, 'no double rewards');
+});

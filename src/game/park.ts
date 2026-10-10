@@ -12,11 +12,11 @@ export function trainingGrounds(scene: THREE.Scene, textures: Surfaces | null = 
   const surfaces: THREE.BufferGeometry[] = [];
   // Real cache textures under the RS shader. Colors are at about half lightness, like client face colors
   // (ambient 64 / 128) before the client's lighting brightens them.
-  const stone = rsMaterial({ surfaces: textures, textureId: STONE_WALL, color: 0x8c877d });
-  const floorMaterial = rsMaterial({ surfaces: textures, textureId: STONE_FLOOR });
-  const wood = rsMaterial({ surfaces: textures, textureId: PLANKS, color: 0x87603a });
-  const metal = rsMaterial({ color: 0x4a5c62 });
-  const trim = rsMaterial({ color: 0x24443a });
+  const stone = rsMaterial({ surfaces: textures, textureId: STONE_WALL, color: 0x8c877d, cutout: true });
+  const floorMaterial = rsMaterial({ surfaces: textures, textureId: STONE_FLOOR, cutout: true });
+  const wood = rsMaterial({ surfaces: textures, textureId: PLANKS, color: 0x87603a, cutout: true });
+  const metal = rsMaterial({ color: 0x4a5c62, cutout: true });
+  const trim = rsMaterial({ color: 0x24443a, cutout: true });
   const add = (geometry: THREE.BufferGeometry, material: THREE.Material, solid = true) => {
     geometry.translate(center.x, center.y, center.z);
     if (material === stone || material === wood || material === floorMaterial) {

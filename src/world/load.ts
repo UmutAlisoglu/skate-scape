@@ -6,11 +6,20 @@ export interface WorldManifest {
   baseTile: [number, number];
   sizeTiles: [number, number];
   spawn: [number, number];
+  /** 2: terrain, collision and grind lines stream per cell (tools/export-area.ts) */
+  format?: number;
 }
 /** Per-object metadata written by export-world (locs.json; older exports kept it inside the manifest). */
 export type PlacedLoc = { id: number; name: string; type: number; rot: number; plane: number; x: number; y: number; t: [number, number] };
-/** Collision split into square cells of `cell` tiles: [cellX, cellY, triangles] (see export-collision). */
-export interface CollisionIndex { cell: number; cells: [number, number, number][] }
+/**
+ * Collision split into square cells of `cell` tiles (see tools/export-area.ts). Each entry is
+ * [cellX, cellY (north), solid object triangles, terrain triangles, grind segments]; a cell's soups are stored
+ * relative to its corner minus `margin` tiles (so geometry hanging over the edge still fits).
+ */
+export interface CollisionIndex { version: 2; cell: number; margin: number; cells: [number, number, number, number, number][] }
+/** Fine-unit origin (x, north) a collision cell's soups are stored relative to. */
+export const cellOrigin = (index: Pick<CollisionIndex, 'cell' | 'margin'>, cx: number, cy: number): [number, number] =>
+  [(cx * index.cell - index.margin) * 128, (cy * index.cell - index.margin) * 128];
 
 // sRGB byte -> linear float, so cache colors look right under three's color management
 const SRGB_TO_LINEAR = new Float32Array(256);
@@ -23,7 +32,7 @@ for (let i = 0; i < 256; i++) {
  * Decodes an exported triangle soup (see tools/export-world.ts) into opaque + translucent geometries.
  * Positions are converted from RS fine units to meters (128 = 1).
  */
-interface SoupOptions { positionsOnly?: boolean; surfaces?: boolean }
+interface SoupOptions { positionsOnly?: boolean; surfaces?: boolean; /** fine units (x, north) added to stored corners */ origin?: [number, number] }
 
 export async function loadSoup(url: string, options: SoupOptions = {}): Promise<{ opaque: THREE.BufferGeometry; translucent: THREE.BufferGeometry | null }> {
   const response = await fetch(url);
@@ -56,7 +65,7 @@ export function decodeSoup(buf: ArrayBuffer, source = 'triangle soup', options: 
   const n = new DataView(buf).getUint32(0, true);
   if (buf.byteLength !== 4 + n * 22) throw new Error(`${source}: invalid triangle data. Run the asset exporters in the README.`);
   if (surfaces && surfaces.length !== n) throw new Error(`${source}: material reference count does not match geometry`);
-  const pos = soupPositions(buf, 0, n);
+  const pos = soupPositions(buf, 0, n, options.origin?.[0] ?? 0, options.origin?.[1] ?? 0);
   const col = new Uint8Array(buf, 4 + n * 18, n * 4);
 
   let translucentCount = 0;

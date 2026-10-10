@@ -3,7 +3,7 @@ import type { Skater } from './skater.ts';
 import type { GrabKind } from './tricks.ts';
 import { deckTexture, type DeckDesign } from './decks.ts';
 import { dampAngle, ease } from '../shared/motion.ts';
-import { rsMaterial } from '../world/rs-material.ts';
+import { gammaColor, rsMaterial } from '../world/rs-material.ts';
 
 /** Grab tweaks: the hand pulls the board up on one side (radians: nose up, yaw, roll toward the toe side). */
 const GRAB_TWEAK: Record<GrabKind, [number, number, number]> = {
@@ -54,6 +54,8 @@ export class Skateboard {
   private deck = new THREE.Group();
   private wheels: THREE.Mesh[] = [];
   private deckMaterial = rsMaterial({ color: 0xc8a06a, side: THREE.DoubleSide });
+  private truckMaterial = rsMaterial({ color: 0x5a6064 });
+  private wheelMaterial = rsMaterial({ color: 0x8a8068 });
   private graphic = new THREE.MeshBasicMaterial({ color: 0xc0c0c0, side: THREE.DoubleSide });
   constructor() {
     this.root.rotation.order = 'YXZ';
@@ -62,9 +64,9 @@ export class Skateboard {
     this.deck.add(grip, new THREE.Mesh(shape.sides, this.deckMaterial), new THREE.Mesh(shape.bottom, this.graphic));
     const wheelGeometry = new THREE.CylinderGeometry(0.055, 0.055, 0.065, 10);
     wheelGeometry.rotateZ(Math.PI / 2);
-    const wheelMaterial = rsMaterial({ color: 0x8a8068 });
+    const wheelMaterial = this.wheelMaterial;
     for (const z of [-0.32, 0.32]) {
-      const truck = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.035), rsMaterial({ color: 0x5a6064 }));
+      const truck = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.025, 0.035), this.truckMaterial);
       truck.position.set(0, 0.075, z);
       this.deck.add(truck);
       for (const x of [-0.17, 0.17]) {
@@ -81,6 +83,12 @@ export class Skateboard {
   get deckAngles(): [number, number, number] { return [this.deck.rotation.x, this.deck.rotation.y, this.deck.rotation.z]; }
   /** The deck's underside graphic (see decks.ts); the plies stay wood-coloured. */
   setDesign(design: DeckDesign) { this.graphic.map = deckTexture(design); this.graphic.needsUpdate = true; }
+  /** The board's metal (boards.ts): plies, trucks and wheels; the graphic underneath stays. */
+  setTier(tier: { color: number; trim: number; wheel: number }) {
+    (this.deckMaterial.uniforms.baseColor.value as THREE.Color).copy(gammaColor(tier.color));
+    (this.truckMaterial.uniforms.baseColor.value as THREE.Color).copy(gammaColor(tier.trim));
+    (this.wheelMaterial.uniforms.baseColor.value as THREE.Color).copy(gammaColor(tier.wheel));
+  }
 
   update(skater: Skater, dt: number, steer: number) {
     this.root.position.set(skater.position.x, skater.position.y - (skater.grinding ? 0.08 : 0), skater.position.z);

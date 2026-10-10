@@ -64,7 +64,10 @@ export function emptyShadows(grid: TileGrid) {
   return [0, 1, 2, 3].map(() => new Uint8Array((grid.width + 1) * (grid.height + 1)));
 }
 
-export function buildTerrain(grid: TileGrid, defs: Defs, shadows: Uint8Array[] = emptyShadows(grid)): Soup {
+/** A block of tiles within a grid, [x0, y0) to [x1, y1): only it is built (the rest of the grid is context). */
+export interface TileRect { x0: number; y0: number; x1: number; y1: number }
+
+export function buildTerrain(grid: TileGrid, defs: Defs, shadows: Uint8Array[] = emptyShadows(grid), rect: TileRect = { x0: 0, y0: 0, x1: grid.width, y1: grid.height }): Soup {
   const soup = new Soup();
   const W = grid.width;
   const H = grid.height;
@@ -100,8 +103,8 @@ export function buildTerrain(grid: TileGrid, defs: Defs, shadows: Uint8Array[] =
       return [-dx / l, -256 / l, -dz / l];
     };
 
-    for (let x = 0; x < W; x++) {
-      for (let y = 0; y < H; y++) {
+    for (let x = rect.x0; x < rect.x1; x++) {
+      for (let y = rect.y0; y < rect.y1; y++) {
         const t = grid.ti(x, y);
         const u = underlays[t];
         const o = overlays[t];
@@ -316,7 +319,8 @@ export class LocBuilder {
     return child !== undefined ? this.defs.loc(child) : loc;
   }
 
-  build(grid: TileGrid, treeDensity = 1): { soup: Soup; placed: PlacedLoc[]; shadows: Uint8Array[]; removedTrees: number; keptTrees: number } {
+  /** `inside` limits which spawns get geometry; the others still cast their ground shadows onto the block. */
+  build(grid: TileGrid, treeDensity = 1, inside: (s: LocSpawn) => boolean = () => true): { soup: Soup; placed: PlacedLoc[]; shadows: Uint8Array[]; removedTrees: number; keptTrees: number } {
     const soup = new Soup();
     const placed: PlacedLoc[] = [];
     const shadows = emptyShadows(grid);
@@ -335,8 +339,9 @@ export class LocBuilder {
 
     for (const s of grid.locs) {
       const loc = this.resolve(s.id);
-      if (!retainTree(loc.name, s.id, grid.baseX + s.x, grid.baseY + s.y, treeDensity)) { removedTrees++; continue; }
-      if (isTree(loc.name)) keptTrees++;
+      const emit = inside(s);
+      if (!retainTree(loc.name, s.id, grid.baseX + s.x, grid.baseY + s.y, treeDensity)) { if (emit) removedTrees++; continue; }
+      if (isTree(loc.name) && emit) keptTrees++;
       const first = soup.triangleCount;
       const swapped = s.rot === 1 || s.rot === 3;
       const width = swapped ? loc.length : loc.width;
@@ -377,7 +382,7 @@ export class LocBuilder {
 
       const ambient = loc.ambient + 64;
       for (const { model, dx, dy } of parts) {
-        if (!model) continue;
+        if (!model || !emit) continue;
         emitModel(soup, model, this.defs, fineX + dx, avgY, fineY + dy, loc.hillskew !== 0 ? (vx, vz) => grid.heightAt(s.plane, vx, vz) - avgY : null, ambient);
       }
 
@@ -396,7 +401,7 @@ export class LocBuilder {
           shade(s.plane, s.x + cx, s.y + cy, 50);
         }
       }
-      const triangleCount = soup.triangleCount - first;
+      const triangleCount = emit ? soup.triangleCount - first : 0;
       if (triangleCount > 0) placed.push({ ...s, name: loc.name, firstTriangle: first, triangleCount });
     }
     return { soup, placed, shadows, removedTrees, keptTrees };

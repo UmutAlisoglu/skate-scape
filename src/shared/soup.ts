@@ -5,16 +5,20 @@
  */
 export const SOUP_TRIANGLE_BYTES = 22;
 
-/** Corner positions in RS fine units on three.js axes (x east, y up, z south, so north is negative). */
-export function soupPositions(buffer: ArrayBufferLike, byteOffset: number, triangles: number): Int32Array {
+/**
+ * Corner positions in RS fine units on three.js axes (x east, y up, z south, so north is negative).
+ * `originX` / `originNorth` (fine units) are added back for soups stored relative to their own corner
+ * (collision cells of a large map, see tools/export-area.ts).
+ */
+export function soupPositions(buffer: ArrayBufferLike, byteOffset: number, triangles: number, originX = 0, originNorth = 0): Int32Array {
   let source = buffer, offset = byteOffset + 4;
   if (offset % 2) { source = new Uint8Array(buffer, offset, triangles * 18).slice().buffer; offset = 0; }
   const unsigned = new Uint16Array(source, offset, triangles * 9), signed = new Int16Array(source, offset, triangles * 9);
   const out = new Int32Array(triangles * 9);
   for (let i = 0; i < triangles * 3; i++) {
-    out[i * 3] = unsigned[i * 3];
+    out[i * 3] = unsigned[i * 3] + originX;
     out[i * 3 + 1] = signed[i * 3 + 1];
-    out[i * 3 + 2] = -unsigned[i * 3 + 2];
+    out[i * 3 + 2] = -(unsigned[i * 3 + 2] + originNorth);
   }
   return out;
 }

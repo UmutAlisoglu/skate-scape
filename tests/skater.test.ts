@@ -31,25 +31,37 @@ test('charged ollie gains height and only banks a completed flip on landing', ()
   assert.equal(skater.comboCount, 2);
   simulate(skater, 0.3);
   assert.ok(skater.position.y > 1);
-  simulate(skater, 1);
+  simulate(skater, 1 + LANDING_WINDOW);
   assert.equal(skater.grounded, true);
   assert.equal(skater.totalScore, 800);
   assert.equal(skater.comboCount, 0);
 });
 
-test('late tricks lose the combo and stumble without a restart', () => {
+test('a flip started too late lands sketchy: a wobble that still banks half the combo, no restart', () => {
   const skater = create();
   skater.update(1 / 60, { ...neutral, pop: true });
-  simulate(skater, 0.4);
+  simulate(skater, 0.5);
   skater.update(1 / 60, { ...neutral, flip: true });
-  simulate(skater, 0.2);
+  simulate(skater, 0.15);
   assert.equal(skater.bailTime, 0);
   assert.ok(skater.stumbleTime > 0);
-  assert.equal(skater.totalScore, 0);
+  assert.match(skater.message, /Landed mid-kickflip · half points/);
+  assert.equal(skater.totalScore, 400, '(100 + 300) / 2 x 2');
   assert.equal(skater.comboCount, 0);
   simulate(skater, 1.1);
   assert.equal(skater.bailTime, 0);
   assert.equal(skater.grounded, true);
+});
+
+test('a flip at least half done when you land finishes itself and lands clean', () => {
+  const skater = create();
+  skater.update(1 / 60, { ...neutral, pop: true });
+  simulate(skater, 0.33); // about two thirds of the kickflip done at touchdown
+  skater.update(1 / 60, { ...neutral, flip: true });
+  simulate(skater, 0.3);
+  assert.equal(skater.stumbleTime, 0);
+  simulate(skater, LANDING_WINDOW);
+  assert.equal(skater.totalScore, 800);
 });
 
 test('repeated trick input cannot farm score and grounded input does nothing', () => {
@@ -59,7 +71,7 @@ test('repeated trick input cannot farm score and grounded input does nothing', (
   skater.update(1 / 60, { ...neutral, pop: true, flip: true });
   simulate(skater, 0.43, { flip: true });
   assert.equal(skater.comboCount, 2);
-  simulate(skater, 0.5);
+  simulate(skater, 0.5 + LANDING_WINDOW);
   assert.equal(skater.totalScore, 800);
 });
 
@@ -74,12 +86,15 @@ test('large frame pauses are bounded and one-shot input survives sub-frame updat
   assert.ok(skater.position.y - before < 0.7);
 });
 
-test('high speed obstacle collision bails; low speed collision stops safely', () => {
+test('wall hits: very fast head-on bails, a medium hit bonks but keeps the combo, a slow one just stops', () => {
   const world: SkateWorld = { ...flat, move: (from) => ({ ...from, blocked: true }) };
   const skater = create(world);
-  skater.speed = 8;
+  skater.speed = 12.5;
   skater.update(1 / 60, neutral);
   assert.ok(skater.bailTime > 0);
+  const bonk = create(world); bonk.speed = 8; bonk.comboCount = 2; bonk.comboPoints = 300;
+  bonk.update(1 / 60, neutral);
+  assert.equal(bonk.bailTime, 0); assert.equal(bonk.comboCount, 2, 'combo kept'); assert.equal(bonk.message, 'Bonk!');
   const slow = create(world);
   slow.speed = 2;
   slow.update(1 / 60, neutral);
@@ -91,10 +106,10 @@ test('falling out of an unloaded area recovers instead of repeatedly bailing', (
   let hasGround = false;
   const world: SkateWorld = { ...flat, groundAt: () => hasGround ? 0 : null };
   const skater = create(world);
-  simulate(skater, 2.5);
-  assert.ok(skater.bailTime > 0);
+  simulate(skater, 1);
+  assert.ok(skater.bailTime > 0, 'nothing below: rescued after a short fall');
   hasGround = true;
-  simulate(skater, 1.2);
+  simulate(skater, 1.8);
   assert.equal(skater.bailTime, 0);
   assert.equal(skater.grounded, true);
   assert.equal(skater.position.y, 0);
@@ -106,7 +121,7 @@ test('landing a 180 preserves forward momentum in a fakie stance', () => {
   simulate(skater, 0.7, { crouch: true });
   skater.update(1 / 60, { ...neutral, pop: true });
   simulate(skater, 2 / 3, { steer: 1 });
-  simulate(skater, 0.3 + LANDING_WINDOW);
+  simulate(skater, 0.5 + LANDING_WINDOW);
   assert.equal(skater.grounded, true);
   assert.ok(skater.totalScore > 100);
   assert.equal(skater.fakie, true);
@@ -126,7 +141,7 @@ test('fast glancing contact slides without a bail or restart', () => {
 
 test('hard head-on impact recovers at the contact position', () => {
   const world: SkateWorld = { ...flat, move: (from, delta) => ({ x: from.x+delta.x, y: from.y+delta.y, z: Math.max(-2,from.z+delta.z), blocked: from.z+delta.z < -2, normal: { x: 0, y: 0, z: 1 } }) };
-  const skater = create(world); skater.speed = 9;
+  const skater = create(world); skater.speed = 12;
   simulate(skater, 0.3); assert.ok(skater.bailTime > 0);
   simulate(skater, 1.6); assert.equal(skater.bailTime, 0); assert.equal(skater.position.z, -2);
 });
@@ -148,15 +163,26 @@ test('rail catch and ollie out keep the combo until a safe landing', () => {
   skater.update(1/60, { ...neutral, grind: true }); assert.ok(skater.grinding);
   simulate(skater, 0.5, { grind: true });
   skater.update(1/60, { ...neutral, grind: true, pop: true }); assert.equal(skater.grinding, null);
-  simulate(skater, 1.1); assert.ok(skater.totalScore > 700);
+  simulate(skater, 0.9 + LANDING_WINDOW); assert.ok(skater.totalScore > 700);
   assert.ok(skater.drainEvents().some(e => e.type === 'land' && e.names.includes('50-50 grind')));
 });
 
-test('water traversal stops a rolling skater on dry ground without a bail', () => {
+test('riding straight at water stops you on dry ground, then the board swings along the shore', () => {
   const world: SkateWorld = { ...flat, canRideAt: (_x,z) => z > -1 };
   const skater = create(world); skater.speed = 6;
-  simulate(skater,0.5,{push:true});
-  assert.equal(skater.bailTime,0); assert.ok(skater.position.z > -1); assert.equal(skater.speed,0);
+  let stopped = false;
+  for (let i = 0; i < 90; i++) { skater.update(1 / 60, { ...neutral, push: true }); stopped ||= skater.speed === 0; assert.ok(skater.position.z > -1, 'never rolls into the water'); }
+  assert.equal(skater.bailTime,0); assert.ok(stopped, 'stopped at the edge');
+  assert.ok(Math.abs(Math.sin(skater.travelHeading)) > 0.9 && skater.speed > 1, 'pushing on rolls along the shore');
+});
+
+test('riding at a shoreline at an angle glances along it and keeps rolling', () => {
+  const world: SkateWorld = { ...flat, canRideAt: (_x,z) => z > -1 };
+  const skater = create(world); skater.heading = 0.6; skater.speed = 6; // heading north-west toward the water
+  simulate(skater,1,{push:true});
+  assert.equal(skater.bailTime,0); assert.ok(skater.position.z > -1); assert.ok(skater.speed > 4, `speed ${skater.speed}`);
+  assert.ok(skater.position.x < -2, 'slid along the shore');
+  assert.ok(Math.abs(Math.sin(skater.heading - Math.PI / 2)) < 0.2, `turned along the shore: ${skater.heading}`);
 });
 
 test('a revert right after landing links into the combo and switches stance', () => {
@@ -181,7 +207,7 @@ test('crashing right after a landing still banks the landed combo', () => {
   const world: SkateWorld = { ...flat, move: (from, delta) => wall
     ? { x: from.x, y: from.y + delta.y, z: from.z, blocked: true, normal: { x: 0, y: 0, z: 1 } }
     : { x: from.x + delta.x, y: from.y + delta.y, z: from.z + delta.z, blocked: false } };
-  const skater = create(world); skater.speed = 9;
+  const skater = create(world); skater.speed = 12;
   skater.update(1 / 60, { ...neutral, pop: true });
   while (skater.grounded) skater.update(1 / 60, neutral);
   while (!skater.grounded) skater.update(1 / 60, neutral);
@@ -272,10 +298,10 @@ const incline = (degrees: number, length = Infinity, after: 'flat' | 'drop' = 'f
 test('hills: rolling downhill speeds up, uphill slows down, and stalling on a bank rolls you back fakie', () => {
   const down = new Skater(incline(10), { x: 0, y: 2, z: -20 }); down.reset({ x: 0, y: 20 * Math.tan(Math.PI / 18), z: -20 }, Math.PI); down.speed = 3;
   simulate(down, 2);
-  assert.ok(down.speed > 5, `gained speed downhill (${down.speed.toFixed(2)})`);
+  assert.ok(down.speed > 4.3, `gained speed downhill (${down.speed.toFixed(2)})`);
   const bank = new Skater(incline(20), { x: 0, y: 0, z: 0.5 }); bank.reset({ x: 0, y: 0, z: 0.5 }, 0); bank.speed = 6;
   let peak = 0;
-  for (let i = 0; i < 240; i++) { bank.update(1 / 60, neutral); peak = Math.max(peak, bank.position.y); }
+  for (let i = 0; i < 360; i++) { bank.update(1 / 60, neutral); peak = Math.max(peak, bank.position.y); }
   assert.ok(peak > 1 && peak < 3, `rolled up the bank to ${peak.toFixed(2)} m`);
   assert.equal(bank.fakie, true, 'came back down tail-first');
   assert.ok(bank.position.z > 0 && bank.speed > 3, 'rolled back out onto the flat with speed');
@@ -326,7 +352,7 @@ test('flip variations come from the direction held with Q / E', () => {
   for (const [input, name] of cases) { const s = airborne(); s.update(1 / 60, { ...neutral, ...input }); assert.equal(s.trick?.name, name); }
 });
 
-test('grabs score while held, and landing while still grabbing loses the combo', () => {
+test('grabs score while held, and landing while still grabbing is sketchy (half points)', () => {
   const held = airborne();
   for (let i = 0; i < 12; i++) held.update(1 / 60, { ...neutral, grab: true });
   assert.equal(held.grab?.name, 'Indy'); assert.equal(held.phase, 'grab');
@@ -335,11 +361,12 @@ test('grabs score while held, and landing while still grabbing loses the combo',
   assert.ok(held.comboPoints > points + 40, 'holding adds points');
   for (let i = 0; i < 120 && !held.grounded; i++) held.update(1 / 60, { ...neutral, grab: true });
   assert.ok(held.stumbleTime > 0 && held.comboCount === 0, 'still grabbing on landing');
+  assert.match(held.message, /Still grabbing on landing · half points/); assert.ok(held.totalScore > 0);
   const released = airborne();
   for (let i = 0; i < 10; i++) released.update(1 / 60, { ...neutral, grab: true, push: true });
   assert.equal(released.grab?.name, 'Nosegrab');
   for (let i = 0; i < 120 && !released.grounded; i++) released.update(1 / 60, neutral);
-  released.update(1 / 60, neutral); simulate(released, 0.5);
+  released.update(1 / 60, neutral); simulate(released, LANDING_WINDOW + 0.1);
   assert.ok(released.totalScore > 0 && released.stumbleTime === 0, 'let go in time and it banks');
 });
 
@@ -448,8 +475,34 @@ test('automatic gaps: clearing water, a big drop and long hang time', () => {
   const s = new Skater(world, { x: 0, y: 3, z: 1 }); s.reset({ x: 0, y: 3, z: 1 }, 0); s.speed = 7;
   simulate(s, 0.1, { crouch: true }); s.update(1 / 60, { ...neutral, pop: true });
   for (let i = 0; i < 200 && (s.grounded === false || i < 5); i++) s.update(1 / 60, neutral);
-  simulate(s, 0.5);
+  simulate(s, LANDING_WINDOW + 0.1);
   const names = s.events.filter((e) => e.type === 'land').flatMap((e) => e.names);
   assert.ok(names.includes('Water gap'), names.join(', '));
   assert.ok(names.includes('Big drop'), names.join(', '));
+});
+
+test('rolling off a ledge, A/D steers the line instead of spinning you into a sketchy landing', () => {
+  const ledge: SkateWorld = { ...flat, groundAt: (_x, z) => (z > -1 ? 1 : 0) };
+  const s = new Skater(ledge, { x: 0, y: 1, z: 0 }); s.reset({ x: 0, y: 1, z: 0 }, 0); s.speed = 6;
+  for (let i = 0; i < 90; i++) s.update(1 / 60, { ...neutral, steer: 1 });
+  assert.equal(s.stumbleTime, 0, 'no sketchy landing');
+  assert.ok(s.grounded);
+});
+
+test('hill crests and gentle slopes do not launch you; a real kicker still does', () => {
+  // a 10 degree slope at 8 m/s throws only 1.4 m/s: too little to count as a launch
+  const crest: SkateWorld = { ...flat, groundAt: (_x, z) => (-z < 3 ? Math.max(0, -z) * Math.tan(Math.PI / 18) : 3 * Math.tan(Math.PI / 18)) };
+  const s = new Skater(crest, { x: 0, y: 0, z: 0.5 }); s.reset({ x: 0, y: 0, z: 0.5 }, 0); s.speed = 8;
+  let flew = false;
+  for (let i = 0; i < 60; i++) { s.update(1 / 60, neutral); flew ||= !s.grounded; }
+  assert.equal(flew, false);
+});
+
+test('a clean but crooked landing keeps your line: the board snaps onto the direction you were flying', () => {
+  const s = airborne(); const line = s.travelHeading;
+  // spin about 40 degrees in the air, then come down
+  for (let i = 0; i < 10; i++) s.update(1 / 60, { ...neutral, steer: 1 });
+  for (let i = 0; i < 120 && !s.grounded; i++) s.update(1 / 60, neutral);
+  assert.ok(s.grounded); assert.equal(s.stumbleTime, 0);
+  assert.ok(Math.abs(Math.sin(s.travelHeading - line)) < 0.01, 'still rolling along the same line');
 });

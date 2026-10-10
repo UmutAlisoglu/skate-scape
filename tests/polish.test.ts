@@ -20,7 +20,7 @@ test('the magnetic catch: crossings align, slow rises and lip catches latch, fas
   const fast=aboveFence();fast.verticalSpeed=3;fast.update(1/60,neutral);assert.equal(fast.grinding,null);
   const slow=aboveFence();slow.verticalSpeed=1.5;slow.update(1/60,neutral);assert.ok(slow.grinding,'still rising slowly past the top');
   const lip=aboveFence();lip.position.y=0.4;lip.update(1/60,neutral);assert.ok(lip.grinding,'catches the lip from just below');assert.equal(lip.position.y,0.6);
-  const under=aboveFence();under.position.y=0.25;under.update(1/60,neutral);assert.equal(under.grinding,null);
+  const under=aboveFence();under.position.y=0.2;under.update(1/60,neutral);assert.equal(under.grinding,null);
 });
 test('the catch reaches a rail beside the board, Shift reaches further, and a tuck (Space held) skips it',()=>{
   const near=aboveFence();near.position.x=0.4;near.update(1/60,neutral);assert.ok(near.grinding);assert.equal(near.position.x,0);
@@ -36,7 +36,7 @@ test('a fresh grind starts calm: no balance loss in the first two seconds withou
 test('braking drops off and an ollie out does not immediately snap back to the same fence',()=>{
   const s=aboveFence();s.update(1/60,neutral);s.update(1/60,{...neutral,brake:true});assert.equal(s.grinding,null);assert.ok(Math.abs(s.position.x)>0.3);
   const jump=aboveFence();jump.update(1/60,neutral);jump.update(1/60,{...neutral,pop:true});
-  for(let i=0;i<66;i++)jump.update(1/60,neutral);
+  for(let i=0;i<90;i++)jump.update(1/60,neutral);
   assert.equal(jump.grinding,null);assert.ok(jump.totalScore>0);
 });
 test('fence pieces on a slope weld into one sloped line; corners share a point; real height gaps stay apart',()=>{
