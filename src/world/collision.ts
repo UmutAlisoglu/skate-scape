@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { MeshBVH } from 'three-mesh-bvh';
 import type { Point, SkateWorld, Rail } from '../game/skater.ts';
 import type { Ramp } from '../game/transition.ts';
-import { cellOrigin, decodeSoup, loadJson, type CollisionIndex } from './load.ts';
+import { assetFetch, cellOrigin, decodeSoup, loadJson, type CollisionIndex } from './load.ts';
 
 const RAIL_CELL = 8;
 /** height of a lip the capsule ignores (see move) */
@@ -246,7 +246,7 @@ export class CollisionStream {
     if (!job) {
       const entry = this.entries.get(key)!;
       const get = async (suffix: string) => {
-        const response = await fetch(`${this.base}/collision/${key}${suffix}`);
+        const response = await assetFetch(`${this.base}/collision/${key}${suffix}`);
         if (!response.ok) throw new Error(`collision cell ${key}${suffix}: HTTP ${response.status}`);
         return response;
       };

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { decodeRenderChunk, distanceToChunkSquared, type RenderChunkRecord, type RenderManifest } from '../shared/render-chunk.ts';
-import { loadJson } from './load.ts';
+import { assetFetch, loadJson } from './load.ts';
 import type { Point } from '../game/skater.ts';
 
 /** lookup maps cache texture id + 1 to texture-array layer + 1 (see loadSurfaces); without it surfaces stay raw. */
@@ -99,7 +99,7 @@ export class RenderWorld {
     }
   }
   private async loadChunk(record:RenderChunkRecord,signal:AbortSignal) {
-    const response=await fetch(`${this.base}/${record.file}`,{signal});
+    const response=await assetFetch(`${this.base}/${record.file}`,{signal});
     if(!response.ok) throw new Error(`${record.file}: HTTP ${response.status}`);
     const buffer=await response.arrayBuffer();
     if(this.disposed||(distanceToChunkSquared(record,this.position.x,this.position.z)>(this.viewDistance+32)**2&&!this.pinned.has(record.id)))return;

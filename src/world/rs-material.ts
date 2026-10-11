@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import type { SurfaceManifest } from '../shared/surfaces.ts';
 import { layerLookup } from '../shared/surfaces.ts';
+import { assetFetch } from './load.ts';
 
 /** Shared by every RS material: change once, everything follows. */
 export const rsUniforms = {
@@ -32,11 +33,11 @@ export interface Surfaces {
 
 /** Loads the client-rendered texture strip as a WebGL2 texture array (layer i = rows i*size..). */
 export async function loadSurfaces(base: string): Promise<Surfaces> {
-  const manifestResponse = await fetch(`${base}/manifest.json`);
+  const manifestResponse = await assetFetch(`${base}/manifest.json`);
   if (!manifestResponse.ok) throw new Error(`${base}/manifest.json: HTTP ${manifestResponse.status}. Run npm run export:surfaces.`);
   const manifest = (await manifestResponse.json()) as SurfaceManifest;
   if (manifest.version !== 2) throw new Error('Outdated surface textures. Run npm run export:surfaces.');
-  const image = await fetch(`${base}/textures.png`).then((r) => {
+  const image = await assetFetch(`${base}/textures.png`).then((r) => {
     if (!r.ok) throw new Error(`${base}/textures.png: HTTP ${r.status}. Run npm run export:surfaces.`);
     return r.blob();
   }).then((blob) => createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }));

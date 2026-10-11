@@ -1,7 +1,7 @@
 // Loads a rectangular block of 64x64 map regions into one tile grid (all 4 planes).
 import { Reader } from '../cache/reader.ts';
 import { ARCHIVE } from '../cache/defs.ts';
-import type { CacheStore, Xtea } from '../cache/store.ts';
+import type { Js5Store, Xtea } from '../cache/js5.ts';
 
 export interface LocSpawn {
   id: number;
@@ -68,7 +68,7 @@ export class TileGrid {
     return a * (1 - fy) + b * fy;
   }
 
-  load(cache: CacheStore, xteas: Map<number, Xtea>, warn: (message: string) => void = console.warn) {
+  load(cache: Js5Store, xteas: Map<number, Xtea>, warn: (message: string) => void = console.warn) {
     for (let ry = 0; ry < this.regionsH; ry++) {
       for (let rx = 0; rx < this.regionsW; rx++) {
         const regionX = this.regionX0 + rx;

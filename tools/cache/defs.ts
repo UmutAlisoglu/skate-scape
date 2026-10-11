@@ -1,6 +1,6 @@
 // Config decoders for the parts of the 530 cache the world exporter needs.
 import { Reader } from './reader.ts';
-import type { CacheStore } from './store.ts';
+import type { Js5Store } from './js5.ts';
 import { rgbToHsl } from '../../src/shared/color.ts';
 
 export const ARCHIVE = {
@@ -263,7 +263,7 @@ export class Defs {
   readonly textureColors: Uint16Array;
   readonly textures: TextureConfig;
 
-  constructor(private cache: CacheStore) {
+  constructor(private cache: Js5Store) {
     this.textures = decodeTextureConfig(cache.file(ARCHIVE.TEXTURE_CONFIG, 0, 0)!);
     this.textureColors = this.textures.averageColor;
   }

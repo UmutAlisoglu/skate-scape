@@ -40,6 +40,7 @@ import { RaceManager } from './game/races.ts';
 import { GhostRider, loadGhost, saveGhost } from './game/ghost.ts';
 import { Landmarks, MEGA, type BuiltCatapult } from './game/landmarks.ts';
 import { loadNpcs } from './player/npc-actor.ts';
+import { buildFromGitlab, type GitlabBuildReport } from './world/gitlab/build.ts';
 import './style.css';
 
 const requestedArea = new URLSearchParams(location.search).get('area');
@@ -67,7 +68,12 @@ const keys = new GameInput(); const pad = new PadInput(); const audio = new Skat
 const monitor = new PerformanceMonitor(renderer);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
+/** ?source=gitlab builds the map in this browser from the 2009scape cache on GitLab instead of loading public/world. */
+const FROM_GITLAB = new URLSearchParams(location.search).get('source') === 'gitlab';
+
 async function main() {
+  let gitlab: GitlabBuildReport | null = null;
+  if (FROM_GITLAB) { AREA ||= 'lumbridge'; gitlab = await buildFromGitlab(AREA, (step) => { loading.textContent = step; }); }
   AREA ||= await firstExportedArea();
   const base = `${ASSET_BASE}world/${AREA}`, playerBase = `${ASSET_BASE}player`;
   const manifest = await loadJson<WorldManifest>(`${base}/manifest.json`);
@@ -468,8 +474,25 @@ async function main() {
     }
     monitor.sample(time,{physics:physicsMs,animation:animationMs,render:renderMs,total:performance.now()-frameStart},{paused:ui.paused,area:player.position.x<0?'training':'lumbridge',...world.stats});
   };
-  renderer.setAnimationLoop(frame);
+  let firstFrame = true;
+  renderer.setAnimationLoop((time) => {
+    frame(time);
+    if (!firstFrame) return;
+    firstFrame = false; performance.mark('scape-first-frame');
+    if (gitlab) reportGitlabBuild(gitlab);
+  });
   // tests drive frames by hand (the desktop preview throttles animation frames while it's hidden)
   if (testing) Object.assign((window as unknown as { __scape: object }).__scape, { frames: async (count: number, step = 1000 / 60) => { for (let i = 0; i < count; i++) { frame(previousTime + step); if (i % 15 === 14) await new Promise((r) => setTimeout(r)); } } });
 }
 main().catch((error) => { loading.textContent = `Could not open the game: ${error}`; console.error(error); });
+
+/** Logs what building the map from GitLab cost (and leaves it on window.__gitlabBuild for measurements). */
+function reportGitlabBuild(report: GitlabBuildReport) {
+  const mainHeap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
+  const summary = { ...report, firstFrameMs: Math.round(performance.now()), mainHeap };
+  Object.assign(window, { __gitlabBuild: summary });
+  const mb = (n?: number) => n === undefined ? '?' : `${(n / 1e6).toFixed(1)} MB`, f = report.fetch;
+  console.info(`[gitlab] first playable frame at ${(summary.firstFrameMs / 1000).toFixed(1)} s (world built in ${(report.wallMs / 1000).toFixed(1)} s): `
+    + `${mb(f.bytes)} downloaded in ${f.requests} requests (peak ${f.peakPerMinute}/min), ${f.cacheHits} blocks from IndexedDB (${mb(f.cacheBytes)}); `
+    + `worker heap ${mb(report.workerHeap)}, page heap ${mb(mainHeap)}`);
+}

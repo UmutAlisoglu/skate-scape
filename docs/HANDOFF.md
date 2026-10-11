@@ -1,4 +1,35 @@
-# Collaboration handoff — updated 2026-10-10
+# Collaboration handoff — updated 2026-10-11
+
+## World built in the browser from GitLab (Claude, 2026-10-11) — proof of concept, "playable with no asset hosting"
+
+`/?source=gitlab&area=lumbridge` builds the map in the visitor's browser from the 2009scape cache that GitLab already serves, so nobody hosts converted Jagex files.
+- **Reading the cache over HTTP** (`tools/cache/http-store.ts`). GitLab's API raw endpoint with `lfs=true` sends `Access-Control-Allow-Origin: *` and honours `Range`; the plain `/-/raw/` URL has no CORS.
+  - The commit is pinned in `gitlabSource()` (bea45a9e, 2026-10-02); its files are byte-identical to `vendor/2009scape-cache`. `?project=` and `?ref=` override it.
+  - The idx files and `xteas.json` are fetched whole. The data file is read in aligned blocks (1 MB by default, `?block=`), 6 requests at a time (`?concurrency=`), never more than 300 a minute (GitLab allows 500 a minute per IP without a login).
+  - Every block is stored in IndexedDB (`skate-scape-cache`), so the next visit downloads nothing. `?cache=off` skips it.
+  - gzip goes through `DecompressionStream`, bzip2 through seek-bzip with a tiny `Buffer` shim (`tools/cache/js5.ts`).
+- **The pipeline stays synchronous.** `prefetchArea` (`tools/world/area-prefetch.ts`) walks the same reads as the exporter (configs, the regions with their borders, the definitions of every object placed, their first defined variants, their models) and fetches them in 4 rounds. The export then runs unchanged. A group it missed throws `MissingGroupError`, gets fetched, and the block is retried (none for Lumbridge).
+- **One exporter, two sinks.** The per-block logic moved from `tools/export-area.ts` into `tools/world/area-export.ts` (`AreaExport`), writing through an `AreaFiles` sink.
+  - The Node script keeps the CLI, resume and `work/` files, and its output is byte-identical to before.
+  - `tools/cache/store.ts` (Node, fs) and `HttpCacheStore` share `Js5Store` (`tools/cache/js5.ts`).
+  - PNGs come from `tools/png-core.ts`: stored deflate in the browser, `deflateSync` in Node.
+- **In the game.**
+  - `src/world/gitlab/worker.ts` runs `buildRemoteArea` (`tools/world/remote-build.ts`) in a module worker.
+  - `build.ts` hands the files to `provideAssets` (`src/world/load.ts`). The loaders (render chunks, collision cells, runes, traversal, minimap, surfaces) go through `assetFetch`/`assetUrl`, which serve built files from memory and fetch everything else as before.
+  - Surfaces are each texture's cache-defined average colour (dithered alpha for cut-out textures) until the client's texture generator is ported.
+  - Player, animations and NPCs still load from `public/player` and `public/npcs`.
+  - On the first frame the console logs, and `window.__gitlabBuild` holds, bytes, requests, the peak per minute, timings and heap.
+- **Checking it.** `npx tsx tools/check-remote-world.ts lumbridge [export folder]` builds from GitLab in Node and compares every file with an export: 706 of 706 identical (PNGs are only size-checked, since their deflate differs). `tests/remote-cache.test.ts` covers the HTTP store with a synthetic cache.
+- **Measured** (Lumbridge, headless Chrome, fresh profile, `npm run dev`):
+  - Cold: 59 MB in 63 requests (peak 63 a minute), first playable frame at 29 s (open 3 s, prefetch 18 s, build 7 s).
+  - Warm (IndexedDB): 0 requests, first frame at 8 s.
+  - Each request to GitLab's API takes about a second from Chrome, so fewer, larger blocks win (table in `remote-build.ts`). Node fetches the same 63 blocks in 4 s, which suggests Chrome's single HTTP/2 connection is the limit.
+  - The worker peaks at 255–315 MB and exits after the build. The page keeps the built files (156 MB, mostly render chunks) in memory, plus a ~30 MB JS heap.
+- **Next:**
+  - a TypeScript port of the client texture generator (`tools/texgen`), which would retire Java and give real textures in the browser;
+  - player and NPC data built from the cache (they read archives 0, 2, 7, 12, 19 and others, through the same store);
+  - building only nearby blocks and streaming the rest, for Misthalin and Gielinor (the whole map can't be held in memory: per-block builds plus IndexedDB for built chunks);
+  - minimap and runes per block.
 
 ## Whole-world free roam (Claude, 2026-10-10) — "build the whole map to freeroam"
 

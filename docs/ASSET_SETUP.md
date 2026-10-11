@@ -96,6 +96,8 @@ Open http://localhost:5173. The game opens the biggest map you've exported. To p
 
 Alternatively, double-click `play.bat` (or run `npm run play`). It builds anything missing, defaulting to the **whole world**, and opens the game.
 
+**Experimental: no world export.** http://localhost:5173/?source=gitlab&area=lumbridge builds Lumbridge in your browser straight from the 2009scape cache on GitLab (about 60 MB on the first visit, kept in the browser for the next). Textures are flat colours for now, and the rider and NPCs still come from `npm run export:player` and `export:npcs`. See [HANDOFF.md](HANDOFF.md#world-built-in-the-browser-from-gitlab).
+
 ## Troubleshooting
 
 | Problem | Fix |
