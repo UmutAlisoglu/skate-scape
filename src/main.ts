@@ -101,6 +101,8 @@ async function main() {
   const collision = new WorldCollision([park.collisionGeometry]); collision.rails = [...park.rails];
   collision.setTraversal(manifest.sizeTiles[0],manifest.sizeTiles[1],traversal);
   const stream = remote ? CollisionStream.empty(base, collision, 16, 64) : await CollisionStream.load(base, collision);
+  // browser-built regions hand their collision cells over from the start, so the spawn's ground is there before we look for it
+  remote?.onRegion((region) => stream.addCells(region.result.cells));
   /** Ground under a map point once its collision is loaded: the floor nearest the terrain, not a roof. */
   const groundPoint = async (x: number, z: number) => {
     // (a browser-built world builds the streets there first)
@@ -164,7 +166,7 @@ async function main() {
     // regions built in the browser join the world as they arrive; a town gets its runes once its streets are all in
     const rails = new Map<string, Rail>(), runed = new Set<string>();
     remote.onRegion((region) => {
-      world.addChunks(region.result.chunks); stream.addCells(region.result.cells);
+      world.addChunks(region.result.chunks);
       for (const rail of region.rails) rails.set(rail.id, rail);
       for (const place of places) if (!runed.has(place.id) && remote!.builtAround(place.x, place.z, 60)) {
         runed.add(place.id);

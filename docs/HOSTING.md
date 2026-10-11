@@ -15,7 +15,7 @@ Nothing converted from the cache is ever uploaded anywhere: it's built in the vi
 ## Deploying to GitHub Pages
 
 1. In the repository's *Settings → Pages*, set *Source* to **GitHub Actions**. The site lands at `https://<owner>.github.io/skate-scape/`. When the owner's user site has a custom domain (`alisoglu.com`), project sites appear under it: `https://alisoglu.com/skate-scape/`.
-2. Run the **Deploy to GitHub Pages** workflow (*Actions → Deploy to GitHub Pages → Run workflow*). It runs `npm ci` and `npm run build`, then publishes `dist/`. The workflow is manual on purpose. To deploy on every push to `main`, add `push: { branches: [main] }` under its `on:`.
+2. Every merge to `main` runs the **Deploy to GitHub Pages** workflow, which runs `npm ci` and `npm run build`, then publishes `dist/`. You can also run it by hand (*Actions → Deploy to GitHub Pages → Run workflow*).
 
 `npm run build` builds for the `/skate-scape/` path. For another path or a domain root, set `BASE_PATH` (for example `BASE_PATH=/ npm run build`).
 

@@ -1,8 +1,10 @@
 name: Deploy to GitHub Pages
 
-# Manual on purpose (Actions → Deploy to GitHub Pages → Run workflow); add `push: { branches: [main] }` to deploy every
-# merge. The site carries no game assets: visitors' browsers build the world from 2009scape's GitLab (docs/HOSTING.md).
+# Deploys every merge to main (and can be run by hand: Actions → Deploy to GitHub Pages → Run workflow). The site
+# carries no game assets: visitors' browsers build the world from 2009scape's GitLab (docs/HOSTING.md).
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
