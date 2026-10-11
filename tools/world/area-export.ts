@@ -29,6 +29,7 @@ export const AREAS: Record<string, Area> = {
   // the whole mainland: Kandarin to Morytania, Karamja and the desert to the top of the Wilderness
   gielinor: { regionX: 33, regionY: 39, w: 28, h: 26, spawn: [3222, 3218] },
 };
+/** regions per block side for the disk export; the browser builds one region at a time (AreaExportOptions.block) */
 export const BLOCK = 4, CELL = 16, MARGIN = 64, MAP_SCALE = 4;
 
 /** The area's output files, by path relative to its folder (public/world/<area>/ on disk). */
@@ -46,6 +47,8 @@ export interface AreaExportOptions {
   xteas: Map<number, Xtea>;
   /** share of trees kept (1 = all) */
   treeDensity: number;
+  /** regions per block side (BLOCK) */
+  block?: number;
   files: AreaFiles;
   encodePng(width: number, height: number, rgba: Uint8Array): Uint8Array;
   log(message: string): void;
@@ -62,20 +65,21 @@ export interface BlockOutput { result: BlockResult; traversal: Uint8Array; heigh
 const WATER_TEXTURES = new Set([669, 651]);
 
 /** The map regions block (bx, by) loads, including its one-region border. */
-export function blockRegions(area: Area, bx: number, by: number) {
-  const rx0 = area.regionX + bx * BLOCK, ry0 = area.regionY + by * BLOCK;
-  const bw = Math.min(BLOCK, area.regionX + area.w - rx0), bh = Math.min(BLOCK, area.regionY + area.h - ry0);
+export function blockRegions(area: Area, bx: number, by: number, block = BLOCK) {
+  const rx0 = area.regionX + bx * block, ry0 = area.regionY + by * block;
+  const bw = Math.min(block, area.regionX + area.w - rx0), bh = Math.min(block, area.regionY + area.h - ry0);
   return { rx0, ry0, bw, bh, grid: { regionX0: rx0 - 1, regionY0: ry0 - 1, regionsW: bw + 2, regionsH: bh + 2 } };
 }
 
 export class AreaExport {
   readonly areaX: number; readonly areaY: number; readonly sizeX: number; readonly sizeY: number;
-  readonly blocksX: number; readonly blocksY: number;
+  readonly blocksX: number; readonly blocksY: number; readonly block: number;
 
   constructor(private readonly o: AreaExportOptions) {
     const { area } = o;
     this.areaX = area.regionX * 64; this.areaY = area.regionY * 64; this.sizeX = area.w * 64; this.sizeY = area.h * 64;
-    this.blocksX = Math.ceil(area.w / BLOCK); this.blocksY = Math.ceil(area.h / BLOCK);
+    this.block = o.block ?? BLOCK;
+    this.blocksX = Math.ceil(area.w / this.block); this.blocksY = Math.ceil(area.h / this.block);
   }
 
   private waterOverlay(o: number) { return o > 0 && WATER_TEXTURES.has(this.o.defs.overlay(o - 1).texture); }
@@ -83,7 +87,7 @@ export class AreaExport {
   /** Builds one block of up to BLOCK x BLOCK regions and writes its render chunks, collision cells and minimap tile. */
   exportBlock(bx: number, by: number): BlockOutput {
     const { area, cache, defs, builder, xteas, files } = this.o, { areaX, areaY } = this;
-    const { rx0, ry0, bw, bh, grid: gridRect } = blockRegions(area, bx, by);
+    const { rx0, ry0, bw, bh, grid: gridRect } = blockRegions(area, bx, by, this.block);
     const tx0 = (rx0 - area.regionX) * 64, ty0 = (ry0 - area.regionY) * 64, tw = bw * 64, th = bh * 64;
     const result: BlockResult = { chunks: [], cells: [], textures: [], minimap: false, stats: { terrain: 0, locs: 0, solid: 0, clutter: 0, rails: 0, kept: 0, removed: 0, water: 0, voids: 0 } };
     const traversal = new Uint8Array(tw * th).fill(2), heights = new Float32Array(tw * th), overview = new Uint8Array(tw * th * 4);
@@ -280,7 +284,7 @@ export class AreaExport {
       chunks.push(...result.chunks); cells.push(...result.cells); for (const t of result.textures) textures.add(t);
       if (result.minimap) tiles.push([bx, by]);
       for (const key of Object.keys(totals) as (keyof Stats)[]) totals[key] += result.stats[key];
-      const tx0 = bx * BLOCK * 64, ty0 = by * BLOCK * 64, tw = Math.min(BLOCK * 64, sizeX - tx0), th = Math.min(BLOCK * 64, sizeY - ty0);
+      const B = this.block * 64, tx0 = bx * B, ty0 = by * B, tw = Math.min(B, sizeX - tx0), th = Math.min(B, sizeY - ty0);
       for (let y = 0; y < th; y++) {
         traversal.set(trav.subarray(y * tw, (y + 1) * tw), tx0 + (ty0 + y) * sizeX);
         heights.set(hf.subarray(y * tw, (y + 1) * tw), tx0 + (ty0 + y) * sizeX);
@@ -297,7 +301,7 @@ export class AreaExport {
     for (let y = 0; y < sizeY; y++) image.set(overview.subarray(y * sizeX * 4, (y + 1) * sizeX * 4), (sizeY - 1 - y) * sizeX * 4);
     for (let i = 0; i < sizeX * sizeY; i++) if (!image[i * 4 + 3]) image.set([11, 26, 20, 255], i * 4);
     files.write('minimap/overview.png', this.o.encodePng(sizeX, sizeY, image));
-    files.write('minimap.json', JSON.stringify({ version: 2, scale: MAP_SCALE, width: sizeX * MAP_SCALE, height: sizeY * MAP_SCALE, block: BLOCK * 64, tiles, overview: 'minimap/overview.png' }));
+    files.write('minimap.json', JSON.stringify({ version: 2, scale: MAP_SCALE, width: sizeX * MAP_SCALE, height: sizeY * MAP_SCALE, block: this.block * 64, tiles, overview: 'minimap/overview.png' }));
 
     // town runes (THPS letters) above the real grind lines around each teleport spot, decided here once
     const rails: Rail[] = [], text = new TextDecoder();

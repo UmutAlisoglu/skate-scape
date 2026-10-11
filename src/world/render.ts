@@ -45,6 +45,8 @@ export class RenderWorld {
     return new RenderWorld(base,await loadJson<RenderManifest>(`${base}/manifest.json`),materials,lookup);
   }
   unpin() { this.pinned.clear(); }
+  /** Adds chunks built after the world opened (the browser-built world, region by region). */
+  addChunks(records:RenderChunkRecord[]) { this.manifest.chunks.push(...records); this.lastRefresh=-Infinity; }
   private wantedAt(position:Point,radius=this.viewDistance+this.manifest.cellSize) {
     return this.manifest.chunks.filter(c=>distanceToChunkSquared(c,position.x,position.z)<=radius*radius);
   }

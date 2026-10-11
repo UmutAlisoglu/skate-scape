@@ -1,13 +1,14 @@
 // Reads the JS5 cache straight from a remote copy (2009scape's GitLab repository) with HTTP Range requests, so the
-// browser can build the world without anyone hosting converted assets. The data file is fetched in large aligned
-// blocks (a 1 MB request covers ~2,000 sectors), a few at a time, and every block is kept in an optional BlockCache
-// (IndexedDB in the browser) so a second visit downloads nothing.
+// browser can build the world without anyone hosting converted assets.
 //
-// The world pipeline reads the cache synchronously, so reading is split in two: an async prefetch() fetches and
-// decompresses the groups a step will need (gzip through DecompressionStream), then the synchronous Js5Store reads
-// see only decoded groups. Reading a group that wasn't prefetched throws MissingGroupError, which callers catch to
-// prefetch it and retry.
-import { bunzip2, indexEntry, Js5Store, openContainer, readChain, SECTOR, type Xtea } from './js5.ts';
+// GitLab answers one client's requests roughly one after another (~0.3 s each) but streams large ranges fast, so the
+// data file is read in a few large aligned blocks (32 MB: the whole 92 MB file is 3 requests), and every block is
+// kept in a BlockCache (IndexedDB in the browser) so later visits download nothing.
+//
+// RemoteCache holds the index files and the fetched blocks and reads raw groups synchronously once their blocks are
+// in. GroupStore is the Js5Store the world pipeline reads (synchronously): its groups are fetched ahead by
+// prefetch(), from a RemoteCache in the same worker or over a message port from another worker.
+import { decodeContainer, indexEntry, Js5Store, readChain, SECTOR, type Xtea } from './js5.ts';
 
 /** Where the cache files are and how they're versioned. */
 export interface CacheSource {
@@ -17,12 +18,29 @@ export interface CacheSource {
   cacheFile(name: string): string;
   /** URL of the region XTEA keys (xteas.json) */
   xteas: string;
+  /** URL of the server's item data (item_configs.json: equipment slots for the player's wardrobe) */
+  itemConfigs: string;
+  /** size of main_file_cache.dat2 when known (it is for the pinned commit), so its blocks can load before the indexes */
+  datSize?: number;
 }
 
+/**
+ * Bytes per data-file request. Cold starts of the site in Chrome (start menu): 8 MB blocks 10.3 s (26 requests),
+ * 16 MB 8.8 s (21), 32 MB 7.1 s (18). The spawn area alone needs 11 of the 12 8 MB blocks, so smaller ones don't help.
+ */
+export const DEFAULT_BLOCK = 32 << 20;
+
+/** The commit the game is pinned to (2026-10-02); its cache is byte-identical to the one ASSET_SETUP.md downloads. */
+export const GITLAB_REF = 'bea45a9e93592b567f9b9293b82a36c8773244be';
+
 /** 2009scape's GitLab repository at a fixed commit. The API's raw endpoint sends CORS headers and honours Range. */
-export function gitlabSource(project = '2009scape/2009scape', ref = 'bea45a9e93592b567f9b9293b82a36c8773244be', api = 'https://gitlab.com/api/v4'): CacheSource {
+export function gitlabSource(project = '2009scape/2009scape', ref = GITLAB_REF, api = 'https://gitlab.com/api/v4'): CacheSource {
   const raw = (path: string) => `${api}/projects/${encodeURIComponent(project)}/repository/files/${encodeURIComponent(path)}/raw?ref=${ref}&lfs=true`;
-  return { id: `gitlab:${project}@${ref}`, cacheFile: (name) => raw(`Server/data/cache/${name}`), xteas: raw('Server/data/configs/xteas.json') };
+  return {
+    id: `gitlab:${project}@${ref}`, cacheFile: (name) => raw(`Server/data/cache/${name}`),
+    xteas: raw('Server/data/configs/xteas.json'), itemConfigs: raw('Server/data/configs/item_configs.json'),
+    datSize: project === '2009scape/2009scape' && ref === GITLAB_REF ? 91_702_293 : undefined,
+  };
 }
 
 /** Persistent storage for fetched blocks and files (IndexedDB in the browser, nothing in tests). */
@@ -38,204 +56,317 @@ export interface FetchStats {
   cacheBytes: number;
   /** most requests started within any 60 s window (GitLab allows 500 a minute per IP without a login) */
   peakPerMinute: number;
-  fetchMs: number;
+  /** answers that were 429 (rate limited) or 5xx and retried */
+  retries: number;
+}
+
+/** The remote host refused or failed for good (offline, rate limited after retries, or an HTTP error). */
+export class FetchError extends Error {
+  override name = 'FetchError';
+  constructor(message: string, readonly status?: number) { super(message); }
 }
 
 export class MissingGroupError extends Error {
   constructor(readonly archive: number, readonly group: number) { super(`cache group ${archive}:${group} was not prefetched`); }
 }
+export class MissingBlocksError extends Error {
+  constructor(readonly blocks: number[]) { super(`data blocks ${blocks.join(', ')} are not loaded`); }
+}
 
-/** Fetches whole files and byte ranges with a concurrency limit, a per-minute ceiling and the block cache. */
+export interface FetcherOptions {
+  concurrency?: number;
+  /** most requests started per minute (default 300, well under GitLab's 500) */
+  perMinute?: number;
+  cache?: BlockCache | null;
+  fetch?: typeof fetch;
+  /** bytes received from the network so far (called as data streams in) */
+  onBytes?(bytes: number): void;
+}
+
+/** Fetches whole files and byte ranges with a concurrency limit, a per-minute ceiling, retries and the block cache. */
 export class Fetcher {
-  readonly stats: FetchStats = { requests: 0, bytes: 0, cacheHits: 0, cacheBytes: 0, peakPerMinute: 0, fetchMs: 0 };
+  readonly stats: FetchStats = { requests: 0, bytes: 0, cacheHits: 0, cacheBytes: 0, peakPerMinute: 0, retries: 0 };
   private active = 0;
   private queue: (() => void)[] = [];
   private started: number[] = [];
 
-  constructor(private readonly options: { concurrency?: number; perMinute?: number; cache?: BlockCache | null; fetch?: typeof fetch } = {}) {}
+  constructor(private readonly options: FetcherOptions = {}) {}
 
   /** Cached copies of `keys`, then `load` for the rest (results in key order). */
   async cached(keys: string[], load: (i: number) => Promise<Uint8Array>): Promise<Uint8Array[]> {
     const hits = this.options.cache ? await this.options.cache.get(keys).catch(() => keys.map(() => undefined)) : keys.map(() => undefined);
-    const fresh: [string, Uint8Array][] = [];
-    const out = await Promise.all(keys.map(async (key, i) => {
+    return Promise.all(keys.map(async (key, i) => {
       const hit = hits[i];
       if (hit) { this.stats.cacheHits++; this.stats.cacheBytes += hit.length; return hit; }
       const data = await load(i);
-      fresh.push([key, data]);
+      // storage full or unavailable: just fetch it again next time
+      if (this.options.cache) await this.options.cache.put([[key, data]]).catch(() => {});
       return data;
     }));
-    if (fresh.length && this.options.cache) await this.options.cache.put(fresh).catch(() => { /* storage full or unavailable: just refetch next time */ });
-    return out;
   }
 
   async get(url: string, range?: [number, number]): Promise<Uint8Array> {
-    await this.slot();
-    const t0 = performance.now();
-    try {
-      for (let attempt = 0; ; attempt++) {
-        const response = await (this.options.fetch ?? fetch)(url, range ? { headers: { Range: `bytes=${range[0]}-${range[1] - 1}` } } : {});
-        if ((response.status === 429 || response.status >= 500) && attempt < 3) {
-          await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+    for (let attempt = 0; ; attempt++) {
+      await this.slot();
+      let response: Response;
+      try {
+        response = await (this.options.fetch ?? fetch)(url, range ? { headers: { Range: `bytes=${range[0]}-${range[1] - 1}` } } : {});
+      } catch (e) {
+        this.release();
+        if (attempt < 2) { await sleep(1000 * 2 ** attempt); continue; }
+        throw new FetchError(`Could not reach ${new URL(url).host} (${(e as Error).message})`);
+      }
+      try {
+        if ((response.status === 429 || response.status >= 500) && attempt < 4) {
+          // back off: honour Retry-After when the server sends one, else 2, 4, 8, 16 s
+          this.stats.retries++;
+          const after = Number(response.headers.get('Retry-After'));
+          await response.body?.cancel();
+          this.release();
+          await sleep(after > 0 ? after * 1000 : 2000 * 2 ** attempt);
           continue;
         }
-        if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-        if (range && response.status !== 206) throw new Error(`${url}: the server ignored the Range header`);
-        const data = new Uint8Array(await response.arrayBuffer());
-        this.stats.bytes += data.length;
+        if (!response.ok) throw new FetchError(`${new URL(url).host} answered HTTP ${response.status}`, response.status);
+        if (range && response.status !== 206) throw new FetchError(`${new URL(url).host} ignored the Range header`);
+        const data = await this.read(response);
+        this.release();
         return data;
+      } catch (e) {
+        this.release();
+        throw e;
       }
-    } finally {
-      this.stats.fetchMs += performance.now() - t0;
-      this.active--;
-      this.queue.shift()?.();
     }
+  }
+
+  /** Reads a body, reporting bytes as they arrive. */
+  private async read(response: Response) {
+    const reader = this.options.onBytes ? response.body?.getReader() : undefined;
+    if (!reader || !this.options.onBytes) {
+      const data = new Uint8Array(await response.arrayBuffer());
+      this.stats.bytes += data.length; this.options.onBytes?.(this.stats.bytes);
+      return data;
+    }
+    const parts: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value); length += value.length; this.stats.bytes += value.length;
+      this.options.onBytes(this.stats.bytes);
+    }
+    const data = new Uint8Array(length);
+    let at = 0;
+    for (const part of parts) { data.set(part, at); at += part.length; }
+    return data;
   }
 
   /** Waits for a free connection and for room under the per-minute ceiling, then counts the request. */
   private async slot() {
-    const concurrency = this.options.concurrency ?? 6, perMinute = this.options.perMinute ?? 300;
+    const concurrency = this.options.concurrency ?? 3, perMinute = this.options.perMinute ?? 300;
     if (this.active >= concurrency) await new Promise<void>((r) => this.queue.push(r));
     this.active++;
     for (;;) {
       const now = performance.now();
       while (this.started.length && this.started[0] <= now - 60_000) this.started.shift();
       if (this.started.length < perMinute) break;
-      await new Promise((r) => setTimeout(r, this.started[0] + 60_000 - now));
+      await sleep(this.started[0] + 60_000 - now);
     }
     this.started.push(performance.now());
     this.stats.requests++;
     this.stats.peakPerMinute = Math.max(this.stats.peakPerMinute, this.started.length);
   }
+  private release() { this.active--; this.queue.shift()?.(); }
 }
 
-/** A remote file read in aligned blocks of `blockSize` bytes. */
-class RangeFile {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export interface GroupRequest { archive: number; group: number; key?: Xtea }
+
+/** The remote index files and data file. Raw groups are read synchronously from the blocks fetched so far. */
+export class RemoteCache {
   readonly blocks = new Map<number, Uint8Array>();
   private loading = new Map<number, Promise<void>>();
-  constructor(private readonly url: string, private readonly key: string, readonly blockSize: number, private readonly fetcher: Fetcher) {}
+  /** chains that left the blocks their length predicted */
+  chainMisses = 0;
 
-  /** `length` bytes at `offset`, or null when a block they span isn't loaded (or lies past the end of the file). */
-  bytes(offset: number, length: number): Uint8Array | null {
-    const first = Math.floor(offset / this.blockSize), last = Math.floor((offset + length - 1) / this.blockSize);
-    if (first === last) {
-      const block = this.blocks.get(first), at = offset - first * this.blockSize;
-      return block && at + length <= block.length ? block.subarray(at, at + length) : null;
+  private idx = new Map<number, Uint8Array>();
+  private all: Promise<void> | null = null;
+  private constructor(readonly source: CacheSource, readonly fetcher: Fetcher, readonly blockSize: number) {}
+
+  /**
+   * Fetches the index files of `archives` (and the master index 255) whole. With `eager`, the whole data file starts
+   * loading at once (alongside the indexes when its size is known), so streaming the map later never waits.
+   */
+  static async open(source: CacheSource, fetcher: Fetcher, archives: number[], blockSize = DEFAULT_BLOCK, eager = false) {
+    const remote = new RemoteCache(source, fetcher, blockSize);
+    const names = [...new Set([255, ...archives])];
+    // the small index requests go first: GitLab answers one client's requests roughly in turn
+    const indexes = fetcher.cached(names.map((a) => `${source.id}/idx${a}`), (i) => fetcher.get(source.cacheFile(`main_file_cache.idx${names[i]}`)));
+    if (eager && source.datSize) void remote.load(Array.from({ length: Math.ceil(source.datSize / blockSize) }, (_, b) => b)).catch(() => {});
+    const files = await indexes;
+    names.forEach((a, i) => remote.idx.set(a, files[i]));
+    if (eager) void remote.loadAll().catch(() => {});
+    return remote;
+  }
+
+  /** A file outside the cache (xteas.json, item_configs.json), through the block cache. */
+  async file(url: string, name: string) {
+    const [data] = await this.fetcher.cached([`${this.source.id}/${name}`], () => this.fetcher.get(url));
+    return data;
+  }
+
+  /** Every data block the opened archives' groups occupy (sector chains are almost always contiguous). */
+  neededBlocks() {
+    const blocks = new Set<number>();
+    for (const index of this.idx.values()) for (let group = 0; group * 6 + 6 <= index.length; group++) {
+      const entry = indexEntry(index, group);
+      if (!entry) continue;
+      const dataLen = group > 0xffff ? SECTOR - 10 : SECTOR - 8, start = entry.sector * SECTOR, end = start + Math.ceil(entry.length / dataLen) * SECTOR;
+      for (let b = Math.floor(start / this.blockSize); b <= Math.floor((end - 1) / this.blockSize); b++) blocks.add(b);
     }
-    const out = new Uint8Array(length);
-    for (let b = first; b <= last; b++) {
-      const block = this.blocks.get(b);
-      if (!block) return null;
-      const from = Math.max(offset, b * this.blockSize), to = Math.min(offset + length, (b + 1) * this.blockSize);
-      if (to - b * this.blockSize > block.length) return null;
-      out.set(block.subarray(from - b * this.blockSize, to - b * this.blockSize), from - offset);
-    }
+    return [...blocks].sort((a, b) => a - b);
+  }
+
+  private sector(sector: number): Uint8Array | null {
+    const offset = sector * SECTOR, first = Math.floor(offset / this.blockSize), last = Math.floor((offset + SECTOR - 1) / this.blockSize);
+    const block = this.blocks.get(first), at = offset - first * this.blockSize;
+    if (!block) return null;
+    if (first === last) return at + SECTOR <= block.length ? block.subarray(at, at + SECTOR) : block.subarray(at);
+    const next = this.blocks.get(last);
+    if (!next) return null;
+    const out = new Uint8Array(SECTOR);
+    out.set(block.subarray(at));
+    out.set(next.subarray(0, SECTOR - (block.length - at)), block.length - at);
     return out;
   }
 
-  blockOf(offset: number) { return Math.floor(offset / this.blockSize); }
+  /**
+   * A group's raw container bytes, or null when the group doesn't exist; throws MissingBlocksError naming the
+   * blocks to load when its chain runs into one that isn't loaded yet.
+   */
+  raw(archive: number, group: number): Uint8Array | null {
+    const entry = indexEntry(this.idx.get(archive), group);
+    if (!entry) return null;
+    let missing = -1;
+    const raw = readChain(archive, group, entry, (sector) => {
+      const bytes = this.sector(sector);
+      if (!bytes) missing = sector;
+      return bytes;
+    });
+    if (raw || missing < 0) return raw;
+    // fetch from the missing sector to where the group's length says it ends (when the chain jumps elsewhere,
+    // the next read finds the next missing sector)
+    if (missing !== entry.sector) this.chainMisses++;
+    const dataLen = group > 0xffff ? SECTOR - 10 : SECTOR - 8;
+    const end = Math.max(missing * SECTOR + SECTOR, entry.sector * SECTOR + Math.ceil(entry.length / dataLen) * SECTOR) - 1;
+    const blocks: number[] = [];
+    for (let b = Math.floor((missing * SECTOR) / this.blockSize); b <= Math.floor(end / this.blockSize); b++) if (!this.blocks.has(b)) blocks.push(b);
+    // a missing sector whose blocks are all loaded lies past the end of the file
+    if (!blocks.length) return null;
+    throw new MissingBlocksError(blocks);
+  }
+
+  /** Raw container bytes for each request, loading blocks as needed. */
+  async raws(requests: GroupRequest[]): Promise<(Uint8Array | null)[]> {
+    for (;;) {
+      const missing = new Set<number>(), out: (Uint8Array | null)[] = [];
+      for (const r of requests) {
+        try { out.push(this.raw(r.archive, r.group)); } catch (e) {
+          if (!(e instanceof MissingBlocksError)) throw e;
+          for (const b of e.blocks) missing.add(b);
+        }
+      }
+      if (!missing.size) return out;
+      await this.load(missing);
+    }
+  }
 
   async load(blocks: Iterable<number>) {
     const wanted = [...new Set(blocks)].filter((b) => !this.blocks.has(b));
-    const fresh = wanted.filter((b) => !this.loading.has(b));
-    if (fresh.length) {
-      const job = this.fetcher.cached(fresh.map((b) => `${this.key}#${this.blockSize}:${b}`), (i) => this.fetcher.get(this.url, [fresh[i] * this.blockSize, (fresh[i] + 1) * this.blockSize]))
-        .then((data) => { fresh.forEach((b, i) => this.blocks.set(b, data[i])); })
-        .finally(() => { for (const b of fresh) this.loading.delete(b); });
-      for (const b of fresh) this.loading.set(b, job);
+    for (const b of wanted) {
+      if (this.loading.has(b)) continue;
+      const job = this.fetcher.cached([`${this.source.id}/dat2#${this.blockSize}:${b}`], () => this.fetcher.get(this.source.cacheFile('main_file_cache.dat2'), [b * this.blockSize, (b + 1) * this.blockSize]))
+        .then(([data]) => { this.blocks.set(b, data); })
+        .finally(() => this.loading.delete(b));
+      this.loading.set(b, job);
     }
-    await Promise.all(wanted.map((b) => this.loading.get(b)));
+    await Promise.all(wanted.map((b) => this.loading.get(b) ?? Promise.resolve()));
+  }
+
+  /**
+   * Loads every block the opened archives use, then follows the file to its end (groups rewritten by cache updates
+   * are appended there). The response headers that would give the file size aren't exposed cross-origin, so the end
+   * is the first short block (or a 416 past it).
+   */
+  loadAll() { return (this.all ??= this.loadEverything()); }
+  private async loadEverything() {
+    const needed = this.neededBlocks();
+    await this.load(needed);
+    let last = needed.length ? needed[needed.length - 1] : -1;
+    while (last < 0 || this.blocks.get(last)?.length === this.blockSize) {
+      last++;
+      try { await this.load([last]); } catch (e) { if (e instanceof FetchError && e.status === 416) break; throw e; }
+    }
+  }
+
+  /** Runs `read` (a synchronous build over this cache), loading any block it runs into and starting over. */
+  async whileLoading<T>(read: () => T): Promise<T> {
+    for (;;) {
+      try { return read(); } catch (e) {
+        if (!(e instanceof MissingBlocksError)) throw e;
+        await this.load(e.blocks);
+      }
+    }
   }
 
   get loadedBytes() { let n = 0; for (const b of this.blocks.values()) n += b.length; return n; }
 }
 
-export interface GroupRequest { archive: number; group: number; key?: Xtea }
-
-export class HttpCacheStore extends Js5Store {
+/**
+ * A Js5Store over raw groups fetched ahead with prefetch(). Payloads are decoded synchronously when first read.
+ * `rawSync` (a RemoteCache in the same worker) also serves groups that weren't prefetched.
+ */
+export class GroupStore extends Js5Store {
+  private raw = new Map<string, Uint8Array | null>();
   private decoded = new Map<string, Uint8Array | null>();
-  private dat: RangeFile;
-  /** prefetch rounds that found a sector chain leaving the blocks its length predicted */
-  chainMisses = 0;
+  constructor(private readonly source: { raws(requests: GroupRequest[]): Promise<(Uint8Array | null)[]>; rawSync?(archive: number, group: number): Uint8Array | null }) { super(); }
 
-  private constructor(readonly source: CacheSource, readonly fetcher: Fetcher, private idx: Map<number, Uint8Array>, blockSize: number) {
-    super();
-    this.dat = new RangeFile(source.cacheFile('main_file_cache.dat2'), `${source.id}/dat2`, blockSize, fetcher);
-  }
+  has(archive: number, group: number) { return this.raw.has(`${archive}:${group}`); }
 
-  /** Opens the cache: fetches the index files of `archives` (and the master index 255) whole, then their reference tables. */
-  static async open(source: CacheSource, fetcher: Fetcher, archives: number[], blockSize: number) {
-    const names = [255, ...archives];
-    const files = await fetcher.cached(names.map((a) => `${source.id}/idx${a}`), (i) => fetcher.get(source.cacheFile(`main_file_cache.idx${names[i]}`)));
-    const store = new HttpCacheStore(source, fetcher, new Map(names.map((a, i) => [a, files[i]])), blockSize);
-    await store.prefetch(archives.map((group) => ({ archive: 255, group })));
-    return store;
-  }
-
-  has(archive: number, group: number) { return this.decoded.has(`${archive}:${group}`); }
-
-  /** Fetches and decodes groups so the synchronous reads can use them. Groups already decoded are skipped. */
   async prefetch(requests: GroupRequest[]) {
-    let pending = requests.filter((r, i) => !this.has(r.archive, r.group) && requests.findIndex((o) => o.archive === r.archive && o.group === r.group) === i);
-    const raws: [GroupRequest, Uint8Array | null][] = [], stuck = new Map<GroupRequest, number>();
-    while (pending.length) {
-      const blocks = new Set<number>(), next: GroupRequest[] = [];
-      for (const request of pending) {
-        const entry = indexEntry(this.idx.get(request.archive), request.group);
-        if (!entry) { raws.push([request, null]); continue; }
-        let missing = -1;
-        const raw = readChain(request.archive, request.group, entry, (sector) => {
-          const bytes = this.dat.bytes(sector * SECTOR, SECTOR);
-          if (!bytes) missing = sector;
-          return bytes;
-        });
-        // a sector that is still missing although its blocks are loaded lies past the end of the file
-        const loaded = missing >= 0 && this.dat.blocks.has(this.dat.blockOf(missing * SECTOR)) && this.dat.blocks.has(this.dat.blockOf(missing * SECTOR + SECTOR - 1));
-        if (raw || missing < 0 || loaded || stuck.get(request) === missing) { raws.push([request, raw]); continue; }
-        stuck.set(request, missing);
-        // Chains are almost always contiguous: fetch from the missing sector to where the group's length says it
-        // ends. When the chain jumps elsewhere, the next round finds the next missing sector.
-        if (missing !== entry.sector) this.chainMisses++;
-        const dataLen = request.group > 0xffff ? SECTOR - 10 : SECTOR - 8;
-        const end = entry.sector * SECTOR + Math.ceil(entry.length / dataLen) * SECTOR;
-        const last = Math.max(missing * SECTOR + SECTOR, end) - 1;
-        for (let b = this.dat.blockOf(missing * SECTOR); b <= this.dat.blockOf(last); b++) blocks.add(b);
-        next.push(request);
-      }
-      if (blocks.size) await this.dat.load(blocks);
-      pending = next;
-    }
-    await Promise.all(raws.map(async ([request, raw]) => {
-      let data: Uint8Array | null = null;
-      if (raw) {
-        try { data = await decompress(raw, request.key); } catch (e) { if (request.archive === 255) throw e; }
-      }
-      this.decoded.set(`${request.archive}:${request.group}`, data);
-    }));
+    const seen = new Set<string>(), wanted = requests.filter((r) => {
+      const k = `${r.archive}:${r.group}`;
+      if (this.raw.has(k) || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    if (!wanted.length) return;
+    const raws = await this.source.raws(wanted);
+    wanted.forEach((r, i) => this.raw.set(`${r.archive}:${r.group}`, raws[i]));
   }
 
-  protected payload(archive: number, group: number): Uint8Array | null {
-    const data = this.decoded.get(`${archive}:${group}`);
-    if (data === undefined) throw new MissingGroupError(archive, group);
+  protected payload(archive: number, group: number, key?: Xtea): Uint8Array | null {
+    const k = `${archive}:${group}`;
+    if (this.decoded.has(k)) return this.decoded.get(k)!;
+    let raw = this.raw.get(k);
+    if (raw === undefined) {
+      if (!this.source.rawSync) throw new MissingGroupError(archive, group);
+      raw = this.source.rawSync(archive, group);
+      this.raw.set(k, raw);
+    }
+    let data: Uint8Array | null = null;
+    if (raw) {
+      try { data = decodeContainer(raw, key); } catch (e) { if (archive === 255) throw e; }
+    }
+    this.decoded.set(k, data);
     return data;
   }
 
-  /** Bytes held: fetched data-file blocks and decoded groups. */
-  get memory() {
-    let decoded = 0;
-    for (const d of this.decoded.values()) decoded += d?.length ?? 0;
-    return { blocks: this.dat.loadedBytes, blockCount: this.dat.blocks.size, decoded, groups: this.decoded.size };
+  /** Drops raw and decoded groups (keeping the reference tables) once a build is done with them. */
+  forget() {
+    for (const k of [...this.raw.keys()]) if (!k.startsWith('255:')) { this.raw.delete(k); this.decoded.delete(k); }
+    this.forgetGroups();
   }
-}
-
-async function decompress(raw: Uint8Array, key?: Xtea): Promise<Uint8Array> {
-  const { type, payload, uncompressedLength } = openContainer(raw, key);
-  if (type === 0) return payload;
-  if (type === 1) return bunzip2(payload, uncompressedLength);
-  const stream = new Blob([payload as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream('gzip'));
-  const out = new Uint8Array(await new Response(stream).arrayBuffer());
-  if (out.length !== uncompressedLength) throw new Error('gzip container has the wrong length');
-  return out;
 }
 
 /** IndexedDB-backed BlockCache (null where IndexedDB isn't available, e.g. Node or a locked-down private window). */
@@ -252,12 +383,11 @@ export async function openIndexedDbCache(name = 'skate-scape-cache'): Promise<Bl
   return {
     async get(keys) {
       const tx = db.transaction('blocks', 'readonly'), store = tx.objectStore('blocks');
-      const values = keys.map((key) => new Promise<Uint8Array | undefined>((resolve) => {
+      return Promise.all(keys.map((key) => new Promise<Uint8Array | undefined>((resolve) => {
         const request = store.get(key);
         request.onsuccess = () => resolve(request.result instanceof ArrayBuffer ? new Uint8Array(request.result) : undefined);
         request.onerror = () => resolve(undefined);
-      }));
-      return Promise.all(values);
+      })));
     },
     async put(entries) {
       const tx = db.transaction('blocks', 'readwrite'), store = tx.objectStore('blocks');

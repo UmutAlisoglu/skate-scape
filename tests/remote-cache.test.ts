@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync, inflateSync } from 'node:zlib';
 import { CacheStore } from '../tools/cache/store.ts';
-import { Fetcher, HttpCacheStore, MissingGroupError, type BlockCache, type CacheSource } from '../tools/cache/http-store.ts';
+import { Fetcher, GroupStore, MissingGroupError, RemoteCache, type BlockCache, type CacheSource } from '../tools/cache/http-store.ts';
 import { encodePngWith } from '../tools/png-core.ts';
 
 const SECTOR = 520;
@@ -62,16 +62,23 @@ function server(files: Map<string, Uint8Array>) {
   return { requests, fetch };
 }
 
-const source: CacheSource = { id: 'test', cacheFile: (name) => `test://${name}`, xteas: 'test://xteas.json' };
+const source: CacheSource = { id: 'test', cacheFile: (name) => `test://${name}`, xteas: 'test://xteas.json', itemConfigs: 'test://item_configs.json' };
+
+/** A GroupStore over a RemoteCache of the synthetic files, with archive 7's reference table read. */
+async function open(fetcher: Fetcher, blockSize: number) {
+  const remote = await RemoteCache.open(source, fetcher, [7], blockSize), store = new GroupStore({ raws: (r) => remote.raws(r) });
+  await store.prefetch([{ archive: 255, group: 7 }]);
+  return { remote, store };
+}
 
 test('the HTTP cache store reads groups over Range requests, including chains that jump across blocks', async () => {
   const { payloads, files } = syntheticCache(), { requests, fetch } = server(files);
-  const store = await HttpCacheStore.open(source, new Fetcher({ fetch }), [7], 1000);
+  const { remote, store } = await open(new Fetcher({ fetch }), 1000);
   await store.prefetch([{ archive: 7, group: 0 }, { archive: 7, group: 1 }]);
   assert.deepEqual(store.file(7, 0), payloads[0]);
   assert.deepEqual(store.file(7, 1), payloads[1]);
   assert.throws(() => store.file(7, 2), MissingGroupError);
-  assert.ok(store.chainMisses > 0, 'the jump was found by a second round');
+  assert.ok(remote.chainMisses > 0, 'the jump was found by a second round');
   assert.ok(requests.every((r, i) => requests.indexOf(r) === i), 'no block is fetched twice');
 });
 
@@ -80,7 +87,7 @@ test('the disk store and the HTTP store read the same cache identically', async 
   for (const [name, data] of files) writeFileSync(join(dir, name), data);
   const disk = new CacheStore(dir);
   for (let g = 0; g < 3; g++) assert.deepEqual(disk.file(7, g), payloads[g]);
-  const store = await HttpCacheStore.open(source, new Fetcher({ fetch: server(files).fetch }), [7], 4096);
+  const { store } = await open(new Fetcher({ fetch: server(files).fetch }), 4096);
   await store.prefetch([0, 1, 2].map((group) => ({ archive: 7, group })));
   for (let g = 0; g < 3; g++) assert.deepEqual(store.file(7, g), disk.file(7, g));
 });
@@ -90,7 +97,7 @@ test('fetched blocks come from the block cache on the next visit', async () => {
   const cache: BlockCache = { get: async (keys) => keys.map((k) => saved.get(k)), put: async (entries) => { for (const [k, v] of entries) saved.set(k, v); } };
   for (const visit of [1, 2]) {
     const { requests, fetch } = server(files), fetcher = new Fetcher({ fetch, cache });
-    const store = await HttpCacheStore.open(source, fetcher, [7], 1000);
+    const { store } = await open(fetcher, 1000);
     await store.prefetch([0, 1, 2].map((group) => ({ archive: 7, group })));
     if (visit === 1) assert.ok(requests.length > 0);
     else { assert.equal(requests.length, 0); assert.ok(fetcher.stats.cacheHits > 0); }
@@ -105,6 +112,21 @@ test('the request limiter keeps under its per-minute ceiling and concurrency', a
   assert.ok(peak <= 3);
   assert.equal(fetcher.stats.requests, 20);
   assert.equal(fetcher.stats.peakPerMinute, 20);
+});
+
+test('the fetcher waits and retries when the host rate-limits it', async () => {
+  let calls = 0;
+  const fetch = (async () => (++calls < 3 ? new Response(null, { status: 429, headers: { 'Retry-After': '0.01' } }) : new Response(new Uint8Array(4), { status: 206 }))) as unknown as typeof globalThis.fetch;
+  const fetcher = new Fetcher({ fetch });
+  assert.equal((await fetcher.get('test://x', [0, 4])).length, 4);
+  assert.equal(fetcher.stats.retries, 2);
+});
+
+test('a whole data file read synchronously once its blocks are loaded', async () => {
+  const { payloads, files } = syntheticCache(), remote = await RemoteCache.open(source, new Fetcher({ fetch: server(files).fetch }), [7], 1000);
+  await remote.loadAll();
+  const store = new GroupStore({ raws: (r) => remote.raws(r), rawSync: (a, g) => remote.raw(a, g) });
+  for (let g = 0; g < 3; g++) assert.deepEqual(store.file(7, g), payloads[g]);
 });
 
 test('PNGs encoded without zlib are valid stored deflate streams', () => {

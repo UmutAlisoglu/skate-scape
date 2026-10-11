@@ -68,7 +68,8 @@ export class TileGrid {
     return a * (1 - fy) + b * fy;
   }
 
-  load(cache: Js5Store, xteas: Map<number, Xtea>, warn: (message: string) => void = console.warn) {
+  /** Reads the regions' tiles and (unless `withLocs` is false) their object spawns. */
+  load(cache: Js5Store, xteas: Map<number, Xtea>, warn: (message: string) => void = console.warn, withLocs = true) {
     for (let ry = 0; ry < this.regionsH; ry++) {
       for (let rx = 0; rx < this.regionsW; rx++) {
         const regionX = this.regionX0 + rx;
@@ -86,6 +87,7 @@ export class TileGrid {
       for (let y = 0; y <= this.height; y++) H[this.width + y * W1] = H[this.width - 1 + y * W1];
       for (let x = 0; x <= this.width; x++) H[x + this.height * W1] = H[x + (this.height - 1) * W1];
     }
+    if (!withLocs) return;
     for (let ry = 0; ry < this.regionsH; ry++) {
       for (let rx = 0; rx < this.regionsW; rx++) {
         const regionX = this.regionX0 + rx;

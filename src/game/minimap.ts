@@ -7,7 +7,7 @@ export interface MapMarker { x: number; z: number; kind: 'marker' | 'spot' | 'do
  * `block` x `block` map tiles, loaded as you get near) over a 1 px per tile overview, which the world map shows.
  * `width` and `height` are the whole map in tile pixels.
  */
-interface MapImage { scale: number; width: number; height: number; block: number; overview: HTMLImageElement; tile(bx: number, by: number): HTMLImageElement | null }
+export interface MapImage { scale: number; width: number; height: number; block: number; overview: CanvasImageSource; tile(bx: number, by: number): (CanvasImageSource & { height: number }) | null }
 
 /** Loads the minimap's overview and index; null when the area has none. */
 export async function loadMapImage(base: string): Promise<MapImage | null> {

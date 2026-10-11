@@ -230,6 +230,12 @@ export class CollisionStream {
     if (index.version !== 2) throw new Error('Old collision format. Run npm run export:world.');
     return new CollisionStream(base, collision, index, radius);
   }
+  /** A stream whose cells arrive later through addCells (the browser-built world). */
+  static empty(base: string, collision: WorldCollision, cell: number, margin: number, radius = 44) {
+    return new CollisionStream(base, collision, { version: 2, cell, margin, cells: [] }, radius);
+  }
+  /** Adds cells built after the world opened. */
+  addCells(cells: CollisionIndex['cells']) { for (const entry of cells) this.entries.set(`${entry[0]}_${entry[1]}`, entry); }
   get loading() { return this.pending.size + this.ready.length; }
   private within(p: Point, radius: number) {
     const size = this.index.cell, tx = p.x, ty = -p.z, keys: string[] = [];

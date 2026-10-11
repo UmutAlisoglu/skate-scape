@@ -43,12 +43,25 @@ const builtAssets = new Map<string, Uint8Array>(), builtUrls = new Map<string, s
 export function provideAssets(base: string, files: Map<string, Uint8Array>) {
   for (const [path, data] of files) builtAssets.set(`${base}/${path}`, data);
 }
+/** Stops serving these built files from memory (the resolver can bring them back). */
+export function forgetAssets(urls: string[]) {
+  for (const url of urls) {
+    builtAssets.delete(url);
+    const blobUrl = builtUrls.get(url);
+    if (blobUrl) { URL.revokeObjectURL(blobUrl); builtUrls.delete(url); }
+  }
+}
+let resolver: ((url: string) => Promise<boolean>) | null = null;
+/** Called for a URL that isn't in memory; true when it provided the file again (the built world's evicted regions). */
+export function setAssetResolver(resolve: (url: string) => Promise<boolean>) { resolver = resolve; }
+
 /** fetch() for game assets: built files from memory, everything else from the network. */
-export function assetFetch(url: string, init?: RequestInit): Promise<Response> {
-  const data = builtAssets.get(url);
+export async function assetFetch(url: string, init?: RequestInit): Promise<Response> {
+  let data = builtAssets.get(url);
+  if (!data && resolver && await resolver(url)) data = builtAssets.get(url);
   if (!data) return fetch(url, init);
-  if (init?.signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
-  return Promise.resolve(new Response(data as Uint8Array<ArrayBuffer>, { headers: { 'Content-Type': url.endsWith('.json') ? 'application/json' : url.endsWith('.png') ? 'image/png' : 'application/octet-stream' } }));
+  if (init?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  return (new Response(data as Uint8Array<ArrayBuffer>, { headers: { 'Content-Type': url.endsWith('.json') ? 'application/json' : url.endsWith('.png') ? 'image/png' : 'application/octet-stream' } }));
 }
 /** A URL an <img> can load an asset from (a blob URL for built files). */
 export function assetUrl(url: string): string {

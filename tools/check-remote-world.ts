@@ -13,9 +13,9 @@ const blockSize = Number(process.argv.find((a) => a.startsWith('--block='))?.sli
 const { world, report } = await buildRemoteArea(name, { source: gitlabSource(), blockSize, progress: (step) => console.log(`  ${step}`) });
 for (const line of report.log) console.log(line);
 const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
-console.log(`Fetched ${mb(report.fetch.bytes)} in ${report.fetch.requests} requests (peak ${report.fetch.peakPerMinute} per minute); ${report.onDemand} groups on demand, ${report.chainMisses} split chains`);
-console.log(`Time: open ${(report.timings.open / 1000).toFixed(1)} s, prefetch ${(report.timings.prefetch / 1000).toFixed(1)} s, build ${(report.timings.build / 1000).toFixed(1)} s, total ${(report.timings.total / 1000).toFixed(1)} s`);
-console.log(`Memory: ${report.memory.blockCount} blocks (${mb(report.memory.blocks)}), ${report.memory.groups} decoded groups (${mb(report.memory.decoded)}), output ${mb(report.memory.output)}; heap ${mb(process.memoryUsage().heapUsed)}`);
+console.log(`Fetched ${mb(report.fetch.bytes)} in ${report.fetch.requests} requests (peak ${report.fetch.peakPerMinute} per minute, ${report.fetch.retries} retried)`);
+console.log(`Time: open ${(report.timings.open / 1000).toFixed(1)} s, download ${(report.timings.download / 1000).toFixed(1)} s, build ${(report.timings.build / 1000).toFixed(1)} s, total ${(report.timings.total / 1000).toFixed(1)} s`);
+console.log(`Memory: cache blocks ${mb(report.memory.blocks)}, output ${mb(report.memory.output)}; heap ${mb(process.memoryUsage().heapUsed)}`);
 
 if (!existsSync(dir)) { console.log(`No export at ${dir} to compare with.`); process.exit(0); }
 const onDisk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? onDisk(join(d, e.name)) : [relative(dir, join(d, e.name)).split(sep).join('/')]);

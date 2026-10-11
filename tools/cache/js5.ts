@@ -1,6 +1,7 @@
 // The JS5 cache format shared by every store: sector chains, containers, reference tables and group splitting.
 // Platform-free, so the same code reads the cache from disk (store.ts, Node) and over HTTP (http-store.ts, browser).
 import Bunzip from 'seek-bzip';
+import { gunzipSync } from 'fflate';
 import { Reader } from './reader.ts';
 
 export const SECTOR = 520;
@@ -99,6 +100,16 @@ export function bunzip2(payload: Uint8Array, uncompressedLength: number): Uint8A
   return out;
 }
 
+/** A container's uncompressed payload, decoded synchronously anywhere (gzip through fflate). */
+export function decodeContainer(raw: Uint8Array, key?: Xtea): Uint8Array {
+  const { type, payload, uncompressedLength } = openContainer(raw, key);
+  if (type === 0) return payload;
+  if (type === 1) return bunzip2(payload, uncompressedLength);
+  const out = gunzipSync(payload);
+  if (out.length !== uncompressedLength) throw new Error('gzip container has the wrong length');
+  return out;
+}
+
 /**
  * Reads groups and files out of a JS5 cache. Subclasses supply each group's uncompressed payload: from disk
  * (CacheStore) or from blocks fetched over HTTP (HttpCacheStore).
@@ -141,6 +152,9 @@ export abstract class Js5Store {
   file(archive: number, group: number, file = 0, key?: Xtea): Uint8Array | null {
     return this.group(archive, group, key)?.get(file) ?? null;
   }
+
+  /** Forgets the memoized groups (not the reference tables), freeing them once a build is done. */
+  protected forgetGroups() { this.groupCache.clear(); }
 }
 
 export function decodeIndex(data: Uint8Array): Js5Index {
