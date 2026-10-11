@@ -1,14 +1,14 @@
 // Turns decoded cache models into the PartModel JSON the browser composes and animates (players and NPCs).
 import { ARCHIVE, type Defs } from './defs.ts';
 import { Model } from './model.ts';
-import type { CacheStore } from './store.ts';
+import type { Js5Store } from './js5.ts';
 import type { PartModel } from '../../src/shared/player-data.ts';
 
 export class PartBuilder {
   private models = new Map<number, Model | null>();
   /** brightness (0-255) of every texture the exported parts use, for hdFaceColor */
   readonly textureBrightness: Record<number, number> = {};
-  constructor(private cache: CacheStore, private defs: Defs) {}
+  constructor(private cache: Js5Store, private defs: Defs) {}
 
   /** A fresh copy of a cache model (null when it's missing). */
   model(id: number): Model | null {

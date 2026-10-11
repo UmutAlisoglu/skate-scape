@@ -1,7 +1,7 @@
 // NPC configs (js5 archive 18) and base animation sets (config group 32), ported from the 530 client's
 // NpcType.decode and BasType.decode.
 import { Reader } from './reader.ts';
-import type { CacheStore } from './store.ts';
+import type { Js5Store } from './js5.ts';
 
 export const NPC_ARCHIVE = 18;
 const BAS_GROUP = 32;
@@ -82,7 +82,7 @@ export function decodeBas(data: Uint8Array): BasType {
 export class NpcDefs {
   private npcs = new Map<number, NpcType>();
   private byName: Map<string, number[]> | null = null;
-  constructor(private cache: CacheStore) {}
+  constructor(private cache: Js5Store) {}
   npc(id: number) {
     let t = this.npcs.get(id);
     if (!t) {

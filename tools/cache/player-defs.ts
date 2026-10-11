@@ -1,6 +1,6 @@
 // Decoders for player appearance + animation data (identity kits, items, sequences, frames, bases).
 import { Reader } from './reader.ts';
-import type { CacheStore } from './store.ts';
+import type { Js5Store } from './js5.ts';
 
 export const ANIM_ARCHIVE = { FRAMES: 0, BASES: 1, SEQS: 20 } as const;
 
@@ -231,7 +231,7 @@ export function decodeFrame(data: Uint8Array, base: AnimBase, baseId: number): A
 }
 
 export class PlayerDefs {
-  constructor(private cache: CacheStore) {}
+  constructor(private cache: Js5Store) {}
   idkIds() {
     return this.cache.index(2).fileIds.get(3) ?? [];
   }
