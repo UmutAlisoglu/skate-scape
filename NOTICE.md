@@ -23,6 +23,7 @@ Parts of this project are translated from the [2009scape RT4 client](https://git
 | `tools/cache/player-colors.ts` | the `PlayerAppearance` colour tables |
 | `tools/world/mesh.ts` | `LocType.getRawModel` and the shape-10 diagonal turn |
 | `src/player/rs-pose.ts` | `Model.transformBone` (animation transforms) |
+| `tools/texgen/*.ts` | the procedural texture generator: `Texture`, every `TextureOp*` (fills, gradients, noise, Voronoi, bark, brickwork, the shape rasterizer and the rest), `ColorImageCache` / `MonochromeImageCache`, `RandomUtils` and `java.util.Random` |
 | `tools/texgen/java/rt4/*.java` | small stand-ins for client classes (`Buffer`, `Js5`, `SoftwareSprite`, `SpriteLoader`) and a driver, so the client's own procedural texture code can run |
 
 `npm run export:surfaces` compiles the client's texture classes from your local copy of the RT4 client source (`vendor/rt4-client`, downloaded separately, not included here).
