@@ -38,15 +38,16 @@ The full controls and mechanics are in [docs/GAMEPLAY.md](docs/GAMEPLAY.md).
 
 A standard gamepad works too.
 
-## Run it locally (Windows)
+## Play it
 
-The game needs graphics, maps and models that belong to Jagex, so they are **not** in this repository. You generate them once on your own computer from the freely available 2009scape cache. It takes about 15 minutes for a small map.
+**https://alisoglu.com/skate-scape/** in Chrome, Edge or Firefox on a computer.
 
-1. **Install the tools** (once):
-   - [Node.js](https://nodejs.org) 24 LTS or newer
-   - [Git for Windows](https://git-scm.com/download/win)
-   - A Java JDK 11 or newer, e.g. [Eclipse Temurin](https://adoptium.net)
-2. **Get the code.** Open *Git Bash* or *PowerShell* and run:
+The first visit downloads the 2009scape game cache, about 95 MB, straight from the 2009scape project's GitLab, then builds the world in your browser. This takes a few seconds on a fast connection. The browser keeps it, so later visits start in under a second. Nothing from Jagex is hosted by this project.
+
+## Run it locally
+
+1. **Install the tools** (once): [Node.js](https://nodejs.org) 24 LTS or newer and [Git](https://git-scm.com).
+2. **Get the code:**
    ```bash
    git clone https://github.com/UmutAlisoglu/skate-scape.git
    ```
@@ -56,14 +57,15 @@ The game needs graphics, maps and models that belong to Jagex, so they are **not
    ```bash
    npm install
    ```
-3. **Generate the game assets** by following [docs/ASSET_SETUP.md](docs/ASSET_SETUP.md). In short: download the 2009scape cache, then run the four `npm run export:*` commands.
-4. **Start the game:**
+3. **Start the game:**
    ```bash
    npm run dev
    ```
-   Then open http://localhost:5173 in Chrome, Edge or Firefox.
+   Then open http://localhost:5173. Like the website, it builds the world in your browser from the 2009scape cache on GitLab.
 
-**Shortcut:** once the cache is in place (step 3), you can just double-click **`play.bat`**. It installs everything, builds any missing assets and opens the game. Keep its window open while you play.
+On Windows you can also double-click **`play.bat`**, which installs everything and opens the game. Keep its window open while you play.
+
+**Working on the exporters or playing offline?** You can still convert the cache on your own computer into `public/` with `npm run export:*` ([docs/ASSET_SETUP.md](docs/ASSET_SETUP.md)). The game uses those exports when they're there. Use `?source=gitlab` or `?source=local` to choose.
 
 ## Project structure
 
@@ -73,16 +75,18 @@ src/
   game/            gameplay: skater physics, tricks, combos, career, UI, races, events, pets, landmarks…
   player/          RS avatar, animation and skate poses on the RS skeleton
   world/           streaming the map, collision, the RS-style shader, sky
+  world/remote/    building the world in the browser from the 2009scape GitLab cache (web workers)
   shared/          data formats shared by the game and the exporters
 tools/
   export-*.ts      asset exporters: read the 2009scape cache, write files to public/
-  cache/           cache readers (models, configs, sprites)
-  world/           turns map regions into terrain, object meshes and collision
-  texgen/          small Java helpers that run the 2009 client's texture code
+  cache/           cache readers (disk and HTTP Range), models, configs, sprites
+  world/           turns map regions into terrain, object meshes and collision (shared with the browser)
+  player/          builds the player's wardrobe, emotes and the NPCs (shared with the browser)
+  texgen/          the 2009 client's procedural texture generator, ported to TypeScript
   play.mjs         the one-click launcher behind play.bat
 tests/             regression tests (npm test), no assets needed
 docs/              gameplay guide, asset setup, implementation notes
-public/            generated assets (ignored by Git, never committed)
+public/            optional local exports (ignored by Git, never committed)
 vendor/            the 2009scape cache and client source you download (ignored by Git)
 ```
 
@@ -96,7 +100,7 @@ Bug reports, ideas and pull requests are all welcome, especially for **performan
 
 Skate Scape is free software under the **GNU Affero General Public License v3.0** ([LICENSE](LICENSE)). You may use, change and share it, but modified versions, including ones you host as a website, must stay open source under the same licence.
 
-Parts of the asset tools and animation code are ported from the [2009scape RT4 client](https://gitlab.com/2009scape/rt4-client) (AGPL-3.0). The game assets come from the [2009scape](https://gitlab.com/2009scape/2009scape) cache, which you download yourself. See [NOTICE.md](NOTICE.md) for full credits.
+Parts of the asset tools, the texture generator and the animation code are ported from the [2009scape RT4 client](https://gitlab.com/2009scape/rt4-client) (AGPL-3.0). The game assets come from the [2009scape](https://gitlab.com/2009scape/2009scape) cache, which your browser (or you) downloads from 2009scape's GitLab. See [NOTICE.md](NOTICE.md) for full credits.
 
 ## Contact
 

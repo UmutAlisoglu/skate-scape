@@ -1,35 +1,59 @@
 # Collaboration handoff — updated 2026-10-11
 
-## World built in the browser from GitLab (Claude, 2026-10-11) — proof of concept, "playable with no asset hosting"
+## The world built in the browser (Claude, 2026-10-11): "playable with nothing hosted by us"
 
-`/?source=gitlab&area=lumbridge` builds the map in the visitor's browser from the 2009scape cache that GitLab already serves, so nobody hosts converted Jagex files.
-- **Reading the cache over HTTP** (`tools/cache/http-store.ts`). GitLab's API raw endpoint with `lfs=true` sends `Access-Control-Allow-Origin: *` and honours `Range`; the plain `/-/raw/` URL has no CORS.
-  - The commit is pinned in `gitlabSource()` (bea45a9e, 2026-10-02); its files are byte-identical to `vendor/2009scape-cache`. `?project=` and `?ref=` override it.
-  - The idx files and `xteas.json` are fetched whole. The data file is read in aligned blocks (1 MB by default, `?block=`), 6 requests at a time (`?concurrency=`), never more than 300 a minute (GitLab allows 500 a minute per IP without a login).
-  - Every block is stored in IndexedDB (`skate-scape-cache`), so the next visit downloads nothing. `?cache=off` skips it.
-  - gzip goes through `DecompressionStream`, bzip2 through seek-bzip with a tiny `Buffer` shim (`tools/cache/js5.ts`).
-- **The pipeline stays synchronous.** `prefetchArea` (`tools/world/area-prefetch.ts`) walks the same reads as the exporter (configs, the regions with their borders, the definitions of every object placed, their first defined variants, their models) and fetches them in 4 rounds. The export then runs unchanged. A group it missed throws `MissingGroupError`, gets fetched, and the block is retried (none for Lumbridge).
-- **One exporter, two sinks.** The per-block logic moved from `tools/export-area.ts` into `tools/world/area-export.ts` (`AreaExport`), writing through an `AreaFiles` sink.
-  - The Node script keeps the CLI, resume and `work/` files, and its output is byte-identical to before.
-  - `tools/cache/store.ts` (Node, fs) and `HttpCacheStore` share `Js5Store` (`tools/cache/js5.ts`).
-  - PNGs come from `tools/png-core.ts`: stored deflate in the browser, `deflateSync` in Node.
-- **In the game.**
-  - `src/world/gitlab/worker.ts` runs `buildRemoteArea` (`tools/world/remote-build.ts`) in a module worker.
-  - `build.ts` hands the files to `provideAssets` (`src/world/load.ts`). The loaders (render chunks, collision cells, runes, traversal, minimap, surfaces) go through `assetFetch`/`assetUrl`, which serve built files from memory and fetch everything else as before.
-  - Surfaces are each texture's cache-defined average colour (dithered alpha for cut-out textures) until the client's texture generator is ported.
-  - Player, animations and NPCs still load from `public/player` and `public/npcs`.
-  - On the first frame the console logs, and `window.__gitlabBuild` holds, bytes, requests, the peak per minute, timings and heap.
-- **Checking it.** `npx tsx tools/check-remote-world.ts lumbridge [export folder]` builds from GitLab in Node and compares every file with an export: 706 of 706 identical (PNGs are only size-checked, since their deflate differs). `tests/remote-cache.test.ts` covers the HTTP store with a synthetic cache.
-- **Measured** (Lumbridge, headless Chrome, fresh profile, `npm run dev`):
-  - Cold: 59 MB in 63 requests (peak 63 a minute), first playable frame at 29 s (open 3 s, prefetch 18 s, build 7 s).
-  - Warm (IndexedDB): 0 requests, first frame at 8 s.
-  - Each request to GitLab's API takes about a second from Chrome, so fewer, larger blocks win (table in `remote-build.ts`). Node fetches the same 63 blocks in 4 s, which suggests Chrome's single HTTP/2 connection is the limit.
-  - The worker peaks at 255–315 MB and exits after the build. The page keeps the built files (156 MB, mostly render chunks) in memory, plus a ~30 MB JS heap.
-- **Next:**
-  - a TypeScript port of the client texture generator (`tools/texgen`), which would retire Java and give real textures in the browser;
-  - player and NPC data built from the cache (they read archives 0, 2, 7, 12, 19 and others, through the same store);
-  - building only nearby blocks and streaming the rest, for Misthalin and Gielinor (the whole map can't be held in memory: per-block builds plus IndexedDB for built chunks);
-  - minimap and runes per block.
+The site (https://alisoglu.com/skate-scape/, GitHub Pages, [HOSTING.md](HOSTING.md)) builds the whole game in the visitor's browser from the 2009scape cache on GitLab: the map, the player, the NPCs, the textures and the minimap. `npm run dev` does the same unless local exports exist (`?source=local|gitlab` forces one).
+
+**Reading the cache** (`tools/cache/http-store.ts`)
+- GitLab's API raw endpoint with `lfs=true` sends `Access-Control-Allow-Origin: *` and honours `Range`. The plain `/-/raw/` URL has no CORS.
+- The commit is pinned in `GITLAB_REF` (bea45a9e, 2026-10-02). Its files are byte-identical to `vendor/2009scape-cache`. `?project=` / `?ref=` override it.
+- GitLab answers one client's requests about 0.3 s apart however small, but streams large ranges at ~17-27 MB/s. So the data file is read in **32 MB aligned blocks** (3 requests), after the 14 index files, `xteas.json` and `item_configs.json`.
+  - Cold start by block size: 8 MB 10.3 s, 16 MB 8.8 s, 32 MB 7.1 s.
+  - The spawn region alone needs 1.1 MB of groups spread over 11 of the 12 8 MB blocks, so smaller blocks never help.
+- `Fetcher`:
+  - limits concurrency (3) and starts at most 300 requests a minute (GitLab allows 500);
+  - retries 429/5xx with backoff, honouring `Retry-After`;
+  - streams progress;
+  - keeps every file and block in IndexedDB (`skate-scape-cache`).
+- `RemoteCache` reads raw groups synchronously from loaded blocks; `MissingBlocksError` says which blocks to load. `loadAll()` follows the file to its end, since cache updates append rewritten groups there. `GroupStore` is the `Js5Store` the pipeline reads: gzip goes through fflate, bzip2 through seek-bzip with a tiny `Buffer` shim, both synchronous.
+
+**One pipeline, Node and browser**
+- The disk exporters and the browser share the same code; Node keeps the vendor-folder store. With the same cache, the outputs are byte-identical:
+  - `tools/world/area-export.ts` (`AreaExport`, with a `block` size: 4 regions on disk, 1 in the browser);
+  - `tools/player/build.ts` (wardrobe, emotes, NPCs);
+  - `tools/world/region.ts`.
+- `tools/check-remote-world.ts` builds an area from GitLab in Node and compares it with an export. Lumbridge: 706/706 files identical.
+- **Textures:** `tools/texgen/*.ts` is a TypeScript port of the client's `Texture` and all 40 `TextureOp`s.
+  - It renders all 680 cache textures in 2.5 s, pixel-identical to the Java renders `export:surfaces` makes (`tools/check-textures.ts`).
+  - The Java path (`export:surfaces`) is unchanged; it could now be retired in favour of the port.
+
+**In the browser** (`src/world/remote/`)
+- `cache-worker.ts` downloads the cache and serves raw groups to the build workers over `MessagePort`s.
+  - It builds what needs the whole cache: the player, the NPCs, textures (on demand, 128 px, with their GL blend mode) and a quick world map. The quick map is one pixel per tile from the map files, and the world map shows it before regions are built.
+  - A first visit (nothing kept for the spawn) loads the whole data file straight away. Later visits load blocks only when a region they haven't built needs them.
+- `build-worker.ts` (up to 3 of them) builds one region at a time with its one-region border, prefetching its groups with `prefetchArea`'s four rounds.
+- `remote-world.ts` runs the workers, and builds regions nearest the rider, or a teleport's or catapult's destination, first. When the neighbourhood is done, teleport spots build in the background.
+  - Each region joins the game as it arrives: render chunks (`RenderWorld.addChunks`), collision cells (`CollisionStream.addCells`), the traversal and heights maps, minimap tiles and the world map overview. A town's runes appear once every region within 60 tiles of it is in.
+  - Unbuilt land counts as void, the same soft edge as the map's border.
+  - Built regions, the player, the NPCs, textures and the overview are kept in IndexedDB (`skate-scape-built`, keyed by `BUILD_VERSION` and the commit).
+  - Only 40 regions' files stay in memory; the farthest are dropped and come back from IndexedDB on demand (`setAssetResolver` in `load.ts`).
+  - **Bump `BUILD_VERSION` when an exporter's output changes.**
+- `surfaces.ts` is a 512-layer texture array that grows as regions bring textures (`addLayerUpdate`). The props' fixed textures (72, 160, 301) and the wardrobe's and NPCs' are added first.
+- `main.ts` waits for the player, the NPCs and the spawn region, then everything else streams. If GitLab is unreachable or keeps refusing, the loading text explains and offers **Try again**.
+
+**Measured** (production build via `npx vite preview`, headless Chrome, fresh profile, fast connection):
+- **Cold:** the start menu is ready at **7.4 s**.
+  - Download: 95.3 MB in 18 requests, peak 18 a minute.
+  - Timeline: cache open 3.6 s, all blocks in 3.9 s, player 4.8 s, NPCs 4.9 s, spawn region 7.3 s.
+  - Memory: workers peak at ~225 MB (the cache worker holds the 92 MB data file); the page's JS heap is ~25 MB.
+- **Warm:** start menu at **0.45 s**, 0 requests.
+- **Teleports** on a cold session: Falador arrives in 0.5–2.9 s and Canifis in 1.8 s (a region builds in 1–4 s).
+
+**Next**
+- Retire `export:surfaces`' Java step in favour of the port.
+- Prebuild regions along the rider's heading, not just around them.
+- Share the decoded configs between build workers, which each decode them for every region.
+- A progress bar instead of the text line.
 
 ## Whole-world free roam (Claude, 2026-10-10) — "build the whole map to freeroam"
 

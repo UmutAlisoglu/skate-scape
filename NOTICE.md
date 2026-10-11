@@ -9,7 +9,7 @@ This program is free software: you can redistribute it and/or modify it under th
 
 Unofficial fan project. Not affiliated with or endorsed by Jagex. RuneScape is a trademark of Jagex Ltd. This repository does not contain Jagex assets.
 
-The game's maps, models, textures, animations and item data are generated on your own computer from the 2009scape game cache (see [docs/ASSET_SETUP.md](docs/ASSET_SETUP.md)). The generated files (`public/world`, `public/player`, `public/surfaces`, `public/npcs`) and the cache itself (`vendor/`) are excluded from this repository and are not covered by its licence.
+The game's maps, models, textures, animations and item data are built from the 2009scape game cache: in each player's browser from 2009scape's GitLab ([docs/HOSTING.md](docs/HOSTING.md)), or on your own computer ([docs/ASSET_SETUP.md](docs/ASSET_SETUP.md)). The generated files (`public/world`, `public/player`, `public/surfaces`, `public/npcs`) and the cache itself (`vendor/`) are excluded from this repository and are not covered by its licence.
 
 ## Code ported from the 2009scape RT4 client
 
@@ -31,5 +31,5 @@ Parts of this project are translated from the [2009scape RT4 client](https://git
 ## Other credits
 
 - [2009scape](https://gitlab.com/2009scape/2009scape): the game cache, map keys (`xteas.json`) and item data.
-- [three.js](https://threejs.org) (MIT), [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) (MIT), [seek-bzip](https://github.com/cscott/seek-bzip) (MIT) and [Vite](https://vitejs.dev) (MIT).
+- [three.js](https://threejs.org) (MIT), [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) (MIT), [seek-bzip](https://github.com/cscott/seek-bzip) (MIT), [fflate](https://github.com/101arrowz/fflate) (MIT) and [Vite](https://vitejs.dev) (MIT).
 - Inspired by Tony Hawk's Pro Skater 3 + 4 and skate.

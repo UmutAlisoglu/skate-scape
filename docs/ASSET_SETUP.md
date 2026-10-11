@@ -1,6 +1,10 @@
-# Asset setup
+# Asset setup (optional)
 
-Skate Scape's maps, models, textures and animations come from the 2009 RuneScape game cache. They belong to Jagex, so **they are not in this repository**. Instead, you download the cache that the [2009scape](https://gitlab.com/2009scape/2009scape) project publishes and convert it on your own computer. The converted files go to `public/` and the downloads go to `vendor/`. Git ignores both folders, so **never commit them**.
+Skate Scape's maps, models, textures and animations come from the 2009 RuneScape game cache. They belong to Jagex, so **they are not in this repository**.
+
+**You don't need anything here to play or to work on the game.** `npm run dev` (like the website) downloads the cache that the [2009scape](https://gitlab.com/2009scape/2009scape) project publishes straight from its GitLab and builds the world in the browser ([HOSTING.md](HOSTING.md)).
+
+This guide is for working on the exporters, or for playing offline. It converts the cache on your own computer into `public/`, which the game uses whenever it's there. The downloads go to `vendor/`. Git ignores both folders, so **never commit them**.
 
 These steps were tested from a fresh clone on Windows 11. The commands are for **Git Bash** (installed with Git for Windows); they work the same on macOS and Linux.
 
@@ -92,11 +96,9 @@ npm run export:surfaces
 npm run dev
 ```
 
-Open http://localhost:5173. The game opens the biggest map you've exported. To pick one, add `?area=`: http://localhost:5173/?area=lumbridge.
+Open http://localhost:5173. The game opens the biggest map you've exported. To pick one, add `?area=`: http://localhost:5173/?area=lumbridge. `?source=local` insists on the exports (an error if there are none), and `?source=gitlab` ignores them and builds the world in the browser.
 
 Alternatively, double-click `play.bat` (or run `npm run play`). It builds anything missing, defaulting to the **whole world**, and opens the game.
-
-**Experimental: no world export.** http://localhost:5173/?source=gitlab&area=lumbridge builds Lumbridge in your browser straight from the 2009scape cache on GitLab (about 60 MB on the first visit, kept in the browser for the next). Textures are flat colours for now, and the rider and NPCs still come from `npm run export:player` and `export:npcs`. See [HANDOFF.md](HANDOFF.md#world-built-in-the-browser-from-gitlab).
 
 ## Troubleshooting
 

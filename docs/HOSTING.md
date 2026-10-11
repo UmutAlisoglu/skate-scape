@@ -1,44 +1,56 @@
 # Hosting the playable site
 
-The game is a static website: no server code runs. It has two parts, hosted separately:
+The game is a static website, served by GitHub Pages at **https://alisoglu.com/skate-scape/**. Nobody hosts game assets. Each visitor's browser downloads the 2009scape cache straight from the [2009scape GitLab repository](https://gitlab.com/2009scape/2009scape) and builds the world from it:
+- GitLab's API sends the cache with CORS headers and answers Range requests.
+- The cache is pinned to one commit (`GITLAB_REF` in `tools/cache/http-store.ts`).
+- The download is about 95 MB in under 20 requests, kept in IndexedDB, so later visits download nothing.
 
 | Part | Size | Where |
 | --- | --- | --- |
-| The game page (`npm run build` → `dist/`) | ~2 MB | Cloudflare Pages (or any static host) |
-| The generated assets (`public/world`, `player`, `surfaces`, `npcs`) | ~3.8 GB for the whole world | a Cloudflare R2 bucket |
+| The game page (`npm run build` → `dist/`) | ~1.2 MB | GitHub Pages |
+| The 2009scape cache | ~95 MB, once per browser | 2009scape's GitLab, fetched by the visitor's browser |
 
-The page loads the assets from the URL in `VITE_ASSET_BASE`, set at build time. The game only downloads the area around the player, so the size of the bucket doesn't affect loading time.
+Nothing converted from the cache is ever uploaded anywhere: it's built in the visitor's own browser, in web workers, and kept there.
 
-The assets are converted Jagex content. Keep them **out of this Git repository**: they live only in the bucket.
+## Deploying to GitHub Pages
 
-## 1. Assets → Cloudflare R2
+1. In the repository's *Settings → Pages*, set *Source* to **GitHub Actions**. The site lands at `https://<owner>.github.io/skate-scape/`. When the owner's user site has a custom domain (`alisoglu.com`), project sites appear under it: `https://alisoglu.com/skate-scape/`.
+2. Run the **Deploy to GitHub Pages** workflow (*Actions → Deploy to GitHub Pages → Run workflow*). It runs `npm ci` and `npm run build`, then publishes `dist/`. The workflow is manual on purpose. To deploy on every push to `main`, add `push: { branches: [main] }` under its `on:`.
 
-1. Generate the assets ([ASSET_SETUP.md](ASSET_SETUP.md)), e.g. `npm run export:world -- gielinor` plus player, npcs and surfaces.
-2. In the Cloudflare dashboard, create an R2 bucket (e.g. `skate-scape-assets`) and connect a custom domain such as `assets.example.com` (*Settings → Public access*).
-3. Add a CORS rule so the game page may fetch from it (*Settings → CORS policy*):
-   ```json
-   [{ "AllowedOrigins": ["https://play.example.com", "http://localhost:5173"], "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["*"], "MaxAgeSeconds": 86400 }]
-   ```
-4. Upload the four folders, keeping their paths (`world/…`, `player/…`, `surfaces/…`, `npcs/…`). With ~33,000 files, use an S3-compatible tool such as [rclone](https://rclone.org/s3/#cloudflare-r2) rather than the dashboard:
-   ```bash
-   rclone copy public r2:skate-scape-assets --include "/{world,player,surfaces,npcs}/**" --transfers 32 --progress
-   ```
+`npm run build` builds for the `/skate-scape/` path. For another path or a domain root, set `BASE_PATH` (for example `BASE_PATH=/ npm run build`).
 
-## 2. Game page → Cloudflare Pages
-
-Connect the GitHub repository in *Workers & Pages → Create → Pages* with:
-
-| Setting | Value |
-| --- | --- |
-| Build command | `npm run build` |
-| Output directory | `dist` |
-| Environment variable | `VITE_ASSET_BASE` = `https://assets.example.com/` |
-| Environment variable | `NODE_VERSION` = `24` |
-
-Every push to `main` then redeploys the page automatically. Assets only need re-uploading when an exporter changes.
-
-To test a build against the hosted assets locally:
+To try the production build locally:
 
 ```bash
-VITE_ASSET_BASE=https://assets.example.com/ npm run build && npx vite preview
+npm run build
 ```
+```bash
+npx vite preview
+```
+
+Then open http://localhost:4173/skate-scape/ in a fresh browser profile to see a first visit.
+
+## What a first visit costs
+
+Measured on 2026-10-11 in Chrome (fresh profile, `npx vite preview`, a fast home connection):
+- **First visit:** the start menu is ready in **7.1 s**. The cache comes down in 18 requests (the index files, the region keys, the item data and three 32 MB blocks of the data file). The player, the NPCs, the textures they use and the streets at Lumbridge are built meanwhile.
+- **Every later visit:** the start menu is ready in **0.4 s**, with nothing downloaded.
+
+The rest of the map builds in the background, nearest the rider and the teleport destinations first, and is kept in IndexedDB too.
+
+GitLab allows 500 unauthenticated API requests a minute per IP. The game makes about 18 in total and never starts more than 300 in a minute. It retries a 429 or 5xx with backoff, honouring `Retry-After`. If GitLab can't be reached, the page says so and offers **Try again**.
+
+## Options for testing
+
+| Query | Effect |
+| --- | --- |
+| `?source=gitlab` | build the world from GitLab even when exports exist in `public/` |
+| `?source=local` | play the exports in `public/` (see [ASSET_SETUP.md](ASSET_SETUP.md)) |
+| `?area=lumbridge` | a smaller map (`lumbridge`, `misthalin` or `gielinor`, the default) |
+| `?cache=off` | don't use IndexedDB (every visit downloads and builds again) |
+| `?ref=<commit>`, `?project=<group/name>` | read the cache from another commit or fork |
+| `?block=<bytes>` | Range request size (default 32 MB) |
+
+## Hosting exported assets instead (optional)
+
+Exports made with `npm run export:*` can still be served from a separate host, such as an R2 bucket with a CORS rule for the site. Upload `public/world`, `player`, `surfaces` and `npcs` with their paths, then build with `VITE_ASSET_BASE=https://assets.example.com/ npm run build`. The game uses them when that host has the map, and builds from GitLab when it doesn't. They're converted Jagex content, so keep them out of this repository.
