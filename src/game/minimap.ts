@@ -1,4 +1,5 @@
 import type { LocalPlace } from './places.ts';
+import { assetFetch, assetUrl } from '../world/load.ts';
 
 export interface MapMarker { x: number; z: number; kind: 'marker' | 'spot' | 'done' | 'rune' }
 /**
@@ -6,21 +7,21 @@ export interface MapMarker { x: number; z: number; kind: 'marker' | 'spot' | 'do
  * `block` x `block` map tiles, loaded as you get near) over a 1 px per tile overview, which the world map shows.
  * `width` and `height` are the whole map in tile pixels.
  */
-interface MapImage { scale: number; width: number; height: number; block: number; overview: HTMLImageElement; tile(bx: number, by: number): HTMLImageElement | null }
+export interface MapImage { scale: number; width: number; height: number; block: number; overview: CanvasImageSource; tile(bx: number, by: number): (CanvasImageSource & { height: number }) | null }
 
 /** Loads the minimap's overview and index; null when the area has none. */
 export async function loadMapImage(base: string): Promise<MapImage | null> {
   try {
-    const meta = await (await fetch(`${base}/minimap.json`)).json() as { version: number; scale: number; width: number; height: number; block: number; tiles: [number, number][]; overview: string };
+    const meta = await (await assetFetch(`${base}/minimap.json`)).json() as { version: number; scale: number; width: number; height: number; block: number; tiles: [number, number][]; overview: string };
     if (meta.version !== 2) return null;
-    const overview = new Image(); overview.src = `${base}/${meta.overview}`; await overview.decode();
+    const overview = new Image(); overview.src = assetUrl(`${base}/${meta.overview}`); await overview.decode();
     const available = new Set(meta.tiles.map(([bx, by]) => `${bx}_${by}`)), cache = new Map<string, HTMLImageElement>();
     const tile = (bx: number, by: number) => {
       const key = `${bx}_${by}`;
       if (!available.has(key)) return null;
       let image = cache.get(key);
       if (image) cache.delete(key);
-      else { image = new Image(); image.src = `${base}/minimap/${key}.png`; }
+      else { image = new Image(); image.src = assetUrl(`${base}/minimap/${key}.png`); }
       cache.set(key, image); // most recently used last
       if (cache.size > 16) cache.delete(cache.keys().next().value!);
       return image.complete && image.naturalWidth ? image : null;

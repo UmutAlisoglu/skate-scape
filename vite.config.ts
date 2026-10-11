@@ -1,11 +1,15 @@
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig } from 'vite';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 // Development-only, loopback diagnostics from the actual player browser.
-export default defineConfig(({ mode }) => ({
-  // public/ holds only the exported game assets (converted Jagex content, gigabytes for the whole world). A build
-  // that loads them from a separate host (VITE_ASSET_BASE, see docs/HOSTING.md) must never copy them into dist/.
-  build: { copyPublicDir: !loadEnv(mode, process.cwd()).VITE_ASSET_BASE },
+export default defineConfig(({ command, isPreview }) => ({
+  // The site is served from https://alisoglu.com/skate-scape/ (GitHub Pages, see docs/HOSTING.md); BASE_PATH=/ builds
+  // for a domain root. The dev server stays at /.
+  base: command === 'build' || isPreview ? process.env.BASE_PATH ?? '/skate-scape/' : '/',
+  // public/ holds only the exported game assets (converted Jagex content, gigabytes for the whole world): a build
+  // never copies them into dist/. The site builds its world in the browser from GitLab, or loads exports from a
+  // separate host when the build sets VITE_ASSET_BASE.
+  build: { copyPublicDir: false },
   // the exported world is tens of thousands of files (gigabytes for the whole of Gielinor): watching it, the
   // exporter's work files or a production build would stall the dev server for minutes
   server:{watch:{ignored:['**/public/world/**','**/public/npcs/**','**/public/player/**','**/public/surfaces/**','**/work/**','**/dist/**','**/vendor/**']}},

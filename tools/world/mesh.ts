@@ -4,7 +4,7 @@
 import { packHsl, hslToRgb, hdFaceColor, greyRgb, scaleLightness, HD_BRIGHTNESS } from '../../src/shared/color.ts';
 import type { Defs, LocType } from '../cache/defs.ts';
 import { ARCHIVE } from '../cache/defs.ts';
-import type { CacheStore } from '../cache/store.ts';
+import type { Js5Store } from '../cache/js5.ts';
 import { Model } from '../cache/model.ts';
 import type { TileGrid, LocSpawn } from './region.ts';
 import { retainTree, isTree } from './tree-policy.ts';
@@ -255,7 +255,7 @@ export interface PlacedLoc extends LocSpawn {
 
 export class LocBuilder {
   private modelCache = new Map<number, Model | null>();
-  constructor(private cache: CacheStore, private defs: Defs) {}
+  constructor(private cache: Js5Store, private defs: Defs) {}
 
   private baseModel(id: number): Model | null {
     if (!this.modelCache.has(id)) {

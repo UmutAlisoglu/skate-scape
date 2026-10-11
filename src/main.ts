@@ -28,7 +28,7 @@ import { ChallengeTracker, challengesFor } from './game/challenges.ts';
 import { Replay } from './game/replay.ts';
 import { DECKS } from './game/decks.ts';
 import { Fireworks } from './game/fireworks.ts';
-import { RuneTokens, RUNE_KINDS, type TownRune } from './game/runes.ts';
+import { placeRunes, RuneTokens, RUNE_KINDS, type TownRune } from './game/runes.ts';
 import { HintCoach } from './game/hints.ts';
 import { abilitiesFor } from './game/skill.ts';
 import { ChatLayer } from './game/chatter.ts';
@@ -40,17 +40,24 @@ import { RaceManager } from './game/races.ts';
 import { GhostRider, loadGhost, saveGhost } from './game/ghost.ts';
 import { Landmarks, MEGA, type BuiltCatapult } from './game/landmarks.ts';
 import { loadNpcs } from './player/npc-actor.ts';
+import { RemoteWorld, SourceUnavailable } from './world/remote/remote-world.ts';
+import type { RenderManifest } from './shared/render-chunk.ts';
+import type { Rail } from './game/skater.ts';
 import './style.css';
 
 const requestedArea = new URLSearchParams(location.search).get('area');
 /** The map: ?area=…, or else the biggest one exported (a fresh setup may only have exported Lumbridge). */
 let AREA = requestedArea && /^[a-z0-9_-]+$/i.test(requestedArea) ? requestedArea : '';
+const exported = async (area: string) => { try { return !!await loadJson<WorldManifest>(`${ASSET_BASE}world/${area}/manifest.json`); } catch { return false; } };
 async function firstExportedArea() {
-  for (const area of ['gielinor', 'misthalin', 'lumbridge']) {
-    try { const manifest = await loadJson<WorldManifest>(`${ASSET_BASE}world/${area}/manifest.json`); if (manifest) return area; } catch { /* not exported */ }
-  }
-  return 'gielinor';
+  for (const area of ['gielinor', 'misthalin', 'lumbridge']) if (await exported(area)) return area;
+  return null;
 }
+/**
+ * Where the world comes from: ?source=local plays the exports in public/ (npm run export:*), ?source=gitlab builds it
+ * in this browser from the 2009scape cache on GitLab. Without ?source, local exports are used when there are any.
+ */
+const SOURCE = new URLSearchParams(location.search).get('source');
 const AREA_NAMES: Record<string, string> = { gielinor: 'Gielinor', misthalin: 'Misthalin', lumbridge: 'Lumbridge' };
 const loading = document.getElementById('hud')!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -68,15 +75,24 @@ const monitor = new PerformanceMonitor(renderer);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
 async function main() {
-  AREA ||= await firstExportedArea();
-  const base = `${ASSET_BASE}world/${AREA}`, playerBase = `${ASSET_BASE}player`;
-  const manifest = await loadJson<WorldManifest>(`${base}/manifest.json`);
+  const local = SOURCE === 'gitlab' ? null : AREA ? (SOURCE === 'local' || await exported(AREA) ? AREA : null) : await firstExportedArea();
+  if (SOURCE === 'local' && !local) throw new Error('No exported map in public/world. Run the exporters (docs/ASSET_SETUP.md) or drop ?source=local to build the world from GitLab.');
+  let remote: RemoteWorld | null = null;
+  if (local) AREA = local;
+  else { AREA ||= 'gielinor'; remote = await RemoteWorld.open(AREA, (text) => { loading.textContent = text; }); }
+  const base = remote ? remote.base : `${ASSET_BASE}world/${AREA}`, playerBase = `${ASSET_BASE}player`;
+  const manifest = remote ? remote.manifest : await loadJson<WorldManifest>(`${base}/manifest.json`);
   loading.textContent = `Opening ${manifest.name}…`;
   if (manifest.format !== 2) throw new Error('This map was exported in an older format. Run npm run export:world.');
+  if (remote) {
+    // the player, the NPCs and the streets at the spawn point; the rest of the map builds in the background
+    const [sx, sy] = manifest.spawn, status = setInterval(() => { loading.textContent = remote!.status(AREA === 'gielinor' ? 'Lumbridge' : manifest.name); }, 150);
+    try { await Promise.all([remote.player(), remote.npcs(), remote.ensureAround(sx + 0.5, -(sy + 0.5), 8).then(() => performance.mark('world-spawn'))]); } finally { clearInterval(status); }
+  }
   const [wardrobe, anims, surfaces, traversal, runeSpots, npcs] = await Promise.all([
-    loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), loadSurfaces(`${ASSET_BASE}surfaces`),
-    loadBytes(`${base}/traversal.bin`),
-    loadJson<{ id: string; place: string; kind: number; position: [number, number, number] }[]>(`${base}/runes.json`),
+    loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), remote ? remote.surfaces : loadSurfaces(`${ASSET_BASE}surfaces`),
+    remote ? remote.traversal : loadBytes(`${base}/traversal.bin`),
+    remote ? [] : loadJson<{ id: string; place: string; kind: number; position: [number, number, number] }[]>(`${base}/runes.json`),
     loadNpcs(`${ASSET_BASE}npcs/npcs.json`),
   ]);
   loading.textContent = 'Preparing the streets and training grounds…';
@@ -84,9 +100,13 @@ async function main() {
   // the training park is always solid; the map's terrain, objects and grind lines stream in cells around the rider
   const collision = new WorldCollision([park.collisionGeometry]); collision.rails = [...park.rails];
   collision.setTraversal(manifest.sizeTiles[0],manifest.sizeTiles[1],traversal);
-  const stream = await CollisionStream.load(base, collision);
+  const stream = remote ? CollisionStream.empty(base, collision, 16, 64) : await CollisionStream.load(base, collision);
+  // browser-built regions hand their collision cells over from the start, so the spawn's ground is there before we look for it
+  remote?.onRegion((region) => stream.addCells(region.result.cells));
   /** Ground under a map point once its collision is loaded: the floor nearest the terrain, not a roof. */
   const groundPoint = async (x: number, z: number) => {
+    // (a browser-built world builds the streets there first)
+    if (remote) await remote.ensureAround(x, z);
     await stream.preload({ x, y: 0, z });
     const terrainY = collision.groundAt(x, z, 25, true) ?? 0;
     return new THREE.Vector3(x, collision.groundAt(x, z, terrainY + 1.2) ?? terrainY, z);
@@ -108,7 +128,8 @@ async function main() {
   const ghostKey = (id: string) => `scape-skate-ghost-${id}${new URLSearchParams(location.search).has('test') ? '-test' : ''}`;
   loading.textContent='Opening nearby streets…';
   const worldMaterials={opaque:rsMaterial({surfaces,vertexColors:true,cutout:true}),translucent:rsMaterial({surfaces,vertexColors:true,transparent:true,cutout:true})};
-  const world=await RenderWorld.load(`${base}/render`,worldMaterials,surfaces.lookup);scene.add(world.group);await world.preload(home,48);
+  const emptyWorld:RenderManifest={version:3,cellSize:16,triangles:0,vertices:0,bytes:0,chunks:[]};
+  const world=remote?new RenderWorld(`${base}/render`,emptyWorld,worldMaterials,surfaces.lookup):await RenderWorld.load(`${base}/render`,worldMaterials,surfaces.lookup);scene.add(world.group);
   const avatar = new Avatar(wardrobe, anims, surfaces); let look = avatar.defaultLook(false);
   look.colors = [1, 4, 2, 1, 0]; avatar.setLook(look); avatar.play('Idle'); scene.add(avatar.mesh);
   const player = avatar.mesh; player.position.copy(home);
@@ -141,6 +162,20 @@ async function main() {
   // five RS runes hidden above grind lines in every town (THPS letters)
   const townRunes: TownRune[] = runeSpots.map((r) => ({ ...r, position: new THREE.Vector3(...r.position) }));
   const runes = new RuneTokens(scene, townRunes, (id) => career.profile.townRunes.includes(id));
+  if (remote) {
+    // regions built in the browser join the world as they arrive; a town gets its runes once its streets are all in
+    const rails = new Map<string, Rail>(), runed = new Set<string>();
+    remote.onRegion((region) => {
+      world.addChunks(region.result.chunks);
+      for (const rail of region.rails) rails.set(rail.id, rail);
+      for (const place of places) if (!runed.has(place.id) && remote!.builtAround(place.x, place.z, 60)) {
+        runed.add(place.id);
+        const near = [...rails.values()].filter((r) => Math.hypot((r.a.x + r.b.x) / 2 - place.x, (r.a.z + r.b.z) / 2 - place.z) < 60);
+        runes.add(placeRunes(place, near, remote!.terrainAt));
+      }
+    });
+  }
+  await world.preload(home,48);
   board.setDesign(DECKS[career.profile.board] ?? DECKS[0]);
   // RS random events (Evil Chicken, Genie, Sandwich Lady...) every few minutes of skating
   const randomEvents = new RandomEvents(scene, collision, npcs, surfaces, chat, {
@@ -176,7 +211,7 @@ async function main() {
   const ghost = new GhostRider(scene, wardrobe, anims, surfaces); let ghostPosition: THREE.Vector3 | null = null;
   // skate.-style session marker: Z drops it where you are (with your speed and direction), X takes you back
   const marker = new SessionMarker(scene);
-  const mapImage = await loadMapImage(base), minimap = mapImage ? new Minimap(mapImage, places, teleportTo) : null;
+  const mapImage = remote ? remote.mapImage() : await loadMapImage(base), minimap = mapImage ? new Minimap(mapImage, places, teleportTo) : null;
   // skate.-style quick drop: B opens it; props save per map on this browser
   const props = new PropManager(scene, collision, collision.rails, surfaces, `scape-skate-props-${AREA}`); props.load();
   // spot challenges: the nearest teleport destination within 60 m is the spot you're skating
@@ -447,7 +482,7 @@ async function main() {
       : flyTo ? { id: 'catapult', parts: [`Roll onto the catapult's pad to fly to ${flyTo}`] } : skating && !busy && !drop && !ui.paused ? hints.update(dt, skater) : null;
     chat.hidden = ui.paused; chat.update(dt, camera);
     fireworks.update(dt); landmarks.update(dt, aimAt);
-    world.update(player.position,time); stream.update(focus ?? player.position); marker.update(time);
+    world.update(player.position,time); stream.update(focus ?? player.position); remote?.update(focus ?? player.position, time); marker.update(time);
     const renderStart = performance.now();
     aimCutout(); renderer.render(scene,camera);
     const renderMs = performance.now()-renderStart; chase.restore();
@@ -468,8 +503,36 @@ async function main() {
     }
     monitor.sample(time,{physics:physicsMs,animation:animationMs,render:renderMs,total:performance.now()-frameStart},{paused:ui.paused,area:player.position.x<0?'training':'lumbridge',...world.stats});
   };
-  renderer.setAnimationLoop(frame);
+  let firstFrame = true;
+  renderer.setAnimationLoop((time) => {
+    frame(time);
+    if (!firstFrame) return;
+    firstFrame = false; performance.mark('scape-first-frame');
+    if (remote) void reportRemoteWorld(remote);
+  });
   // tests drive frames by hand (the desktop preview throttles animation frames while it's hidden)
   if (testing) Object.assign((window as unknown as { __scape: object }).__scape, { frames: async (count: number, step = 1000 / 60) => { for (let i = 0; i < count; i++) { frame(previousTime + step); if (i % 15 === 14) await new Promise((r) => setTimeout(r)); } } });
 }
-main().catch((error) => { loading.textContent = `Could not open the game: ${error}`; console.error(error); });
+main().catch((error) => {
+  console.error(error);
+  loading.hidden = false;
+  if (!(error instanceof SourceUnavailable)) { loading.textContent = `Could not open the game: ${error}`; return; }
+  // GitLab unreachable or rate-limiting: say so, and offer to try again
+  const message = document.createElement('p'), retry = document.createElement('button');
+  message.textContent = `Couldn't download the world from the 2009scape GitLab (${error.message}). It may be busy or unreachable; try again in a minute.`;
+  retry.type = 'button'; retry.className = 'retry'; retry.textContent = 'Try again'; retry.onclick = () => location.reload();
+  loading.replaceChildren(message, retry);
+});
+
+/** Logs what building the world in this browser cost (and leaves it on window.__remoteWorld for measurements). */
+async function reportRemoteWorld(remote: RemoteWorld) {
+  const firstFrameMs = Math.round(performance.now()), ready = performance.getEntriesByName('scape-ready')[0]?.startTime;
+  const cache = await remote.cacheStats().catch(() => null);
+  const mainHeap = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
+  const marks = Object.fromEntries(performance.getEntriesByType('mark').filter((m) => m.name.startsWith('world-')).map((m) => [m.name, Math.round(m.startTime)]));
+  const summary = { firstFrameMs, readyMs: ready && Math.round(ready), marks, ...remote.stats, cache, mainHeap };
+  Object.assign(window, { __remoteWorld: summary });
+  const mb = (n?: number) => (n === undefined ? '?' : `${(n / 1e6).toFixed(1)} MB`);
+  console.info(`[world] first playable frame at ${(firstFrameMs / 1000).toFixed(1)} s: ${mb(cache?.fetch.bytes)} downloaded in ${cache?.fetch.requests} requests (peak ${cache?.fetch.peakPerMinute}/min), `
+    + `${mb(cache?.fetch.cacheBytes)} from IndexedDB; regions built ${remote.stats.regionsBuilt}, from IndexedDB ${remote.stats.regionsFromCache}`);
+}

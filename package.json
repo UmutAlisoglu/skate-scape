@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "fflate": "^0.8.2",
     "seek-bzip": "^2.0.0",
     "three": "^0.186.1",
     "three-mesh-bvh": "^0.9.16"

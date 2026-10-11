@@ -41,9 +41,15 @@ export function placeRunes(place: LocalPlace, rails: Rail[], terrainAt: (x: numb
 /** The rune tokens in the scene: spinning, bobbing, with a soft beam so they can be spotted from a distance. */
 export class RuneTokens {
   private readonly meshes = new Map<string, THREE.Group>();
-  constructor(scene: THREE.Scene, readonly runes: TownRune[], collected: (id: string) => boolean) {
-    const beamGeometry = new THREE.CylinderGeometry(0.05, 0.05, 6, 6, 1, true).translate(0, 3, 0);
+  private readonly beamGeometry = new THREE.CylinderGeometry(0.05, 0.05, 6, 6, 1, true).translate(0, 3, 0);
+  readonly runes: TownRune[] = [];
+  constructor(private readonly scene: THREE.Scene, runes: TownRune[], private readonly collected: (id: string) => boolean) { this.add(runes); }
+  /** Places more runes (a town whose streets were just built in the browser). */
+  add(runes: TownRune[]) {
+    const { scene, collected, beamGeometry } = this;
     for (const rune of runes) {
+      if (this.runes.some((r) => r.id === rune.id)) continue;
+      this.runes.push(rune);
       if (collected(rune.id)) continue;
       const color = RUNE_KINDS[rune.kind].color, group = new THREE.Group();
       const stone = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.42, 0.1), new THREE.MeshBasicMaterial({ color: 0x8c8a86 }));
