@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { loadBytes, loadJson, type WorldManifest } from './world/load.ts';
+import { ASSET_BASE, loadBytes, loadJson, type WorldManifest } from './world/load.ts';
 import { loadSurfaces, rsMaterial, rsUniforms } from './world/rs-material.ts';
 import { createSky } from './world/sky.ts';
 import { CollisionStream, WorldCollision } from './world/collision.ts';
@@ -42,15 +42,22 @@ import { Landmarks, MEGA, type BuiltCatapult } from './game/landmarks.ts';
 import { loadNpcs } from './player/npc-actor.ts';
 import './style.css';
 
-const requestedArea = new URLSearchParams(location.search).get('area') ?? 'gielinor';
-const AREA = /^[a-z0-9_-]+$/i.test(requestedArea) ? requestedArea : 'gielinor';
+const requestedArea = new URLSearchParams(location.search).get('area');
+/** The map: ?area=…, or else the biggest one exported (a fresh setup may only have exported Lumbridge). */
+let AREA = requestedArea && /^[a-z0-9_-]+$/i.test(requestedArea) ? requestedArea : '';
+async function firstExportedArea() {
+  for (const area of ['gielinor', 'misthalin', 'lumbridge']) {
+    try { const manifest = await loadJson<WorldManifest>(`${ASSET_BASE}world/${area}/manifest.json`); if (manifest) return area; } catch { /* not exported */ }
+  }
+  return 'gielinor';
+}
 const AREA_NAMES: Record<string, string> = { gielinor: 'Gielinor', misthalin: 'Misthalin', lumbridge: 'Lumbridge' };
 const loading = document.getElementById('hud')!;
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 const requestedRatio=Number(new URLSearchParams(location.search).get('dpr'));
 renderer.setPixelRatio(requestedRatio>0?Math.max(0.75,Math.min(requestedRatio,2)):Math.min(devicePixelRatio,1)); renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.NoToneMapping; // RS materials write final client-space colors
-renderer.domElement.tabIndex = 0; renderer.domElement.setAttribute('aria-label', 'Scape Skate game view');
+renderer.domElement.tabIndex = 0; renderer.domElement.setAttribute('aria-label', 'Skate Scape game view');
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const sky = createSky(rsUniforms.fogColor.value); scene.add(sky);
@@ -61,15 +68,16 @@ const monitor = new PerformanceMonitor(renderer);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
 async function main() {
-  const base = `${import.meta.env.BASE_URL}world/${AREA}`, playerBase = `${import.meta.env.BASE_URL}player`;
+  AREA ||= await firstExportedArea();
+  const base = `${ASSET_BASE}world/${AREA}`, playerBase = `${ASSET_BASE}player`;
   const manifest = await loadJson<WorldManifest>(`${base}/manifest.json`);
   loading.textContent = `Opening ${manifest.name}…`;
   if (manifest.format !== 2) throw new Error('This map was exported in an older format. Run npm run export:world.');
   const [wardrobe, anims, surfaces, traversal, runeSpots, npcs] = await Promise.all([
-    loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), loadSurfaces(`${import.meta.env.BASE_URL}surfaces`),
+    loadJson<Wardrobe>(`${playerBase}/wardrobe.json`), loadJson<AnimData>(`${playerBase}/anims.json`), loadSurfaces(`${ASSET_BASE}surfaces`),
     loadBytes(`${base}/traversal.bin`),
     loadJson<{ id: string; place: string; kind: number; position: [number, number, number] }[]>(`${base}/runes.json`),
-    loadNpcs(`${import.meta.env.BASE_URL}npcs/npcs.json`),
+    loadNpcs(`${ASSET_BASE}npcs/npcs.json`),
   ]);
   loading.textContent = 'Preparing the streets and training grounds…';
   const park = trainingGrounds(scene, surfaces);

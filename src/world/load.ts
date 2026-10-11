@@ -29,6 +29,12 @@ for (let i = 0; i < 256; i++) {
 }
 
 /**
+ * Where the exported game assets live: next to the game by default, or on a separate host (Cloudflare R2, a CDN)
+ * when the build sets VITE_ASSET_BASE, e.g. VITE_ASSET_BASE=https://assets.example.com/ npm run build.
+ */
+export const ASSET_BASE = (import.meta.env.VITE_ASSET_BASE as string | undefined)?.replace(/\/?$/, '/') ?? import.meta.env.BASE_URL;
+
+/**
  * Decodes an exported triangle soup (see tools/export-world.ts) into opaque + translucent geometries.
  * Positions are converted from RS fine units to meters (128 = 1).
  */

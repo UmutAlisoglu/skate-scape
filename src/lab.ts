@@ -2,7 +2,7 @@
 // rig can be judged in one screenshot. ?view=side|back|top|nose and ?look=random pick the camera and outfit;
 // ?only=a,b limits it to named poses and ?distance=n moves the camera.
 import * as THREE from 'three';
-import { loadJson } from './world/load.ts';
+import { ASSET_BASE, loadJson } from './world/load.ts';
 import { loadSurfaces, rsMaterial } from './world/rs-material.ts';
 import { Avatar } from './player/avatar.ts';
 import { Skateboard, deckAttitude } from './game/board.ts';
@@ -48,9 +48,9 @@ scene.background = new THREE.Color(0xc8c0a8);
 const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 200);
 
 const [wardrobe, anims, surfaces] = await Promise.all([
-  loadJson<Wardrobe>('/player/wardrobe.json'),
-  loadJson<AnimData>('/player/anims.json'),
-  loadSurfaces('/surfaces'),
+  loadJson<Wardrobe>(`${ASSET_BASE}player/wardrobe.json`),
+  loadJson<AnimData>(`${ASSET_BASE}player/anims.json`),
+  loadSurfaces(`${ASSET_BASE}surfaces`),
 ]);
 const spacing = 1.4;
 const labels = document.getElementById('labels')!;

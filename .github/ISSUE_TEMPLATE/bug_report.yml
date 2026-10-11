@@ -1,0 +1,41 @@
+name: Bug report
+description: Something is broken or behaves wrongly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Please search existing issues first. Never attach game asset files (anything from `public/` or `vendor/`).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Teleport to Varrock
+        2. Ollie onto the fountain wall
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where in the world?
+      placeholder: e.g. Lumbridge castle courtyard, near the fountain
+  - type: input
+    id: setup
+    attributes:
+      label: Browser, OS and graphics card
+      placeholder: e.g. Chrome 140, Windows 11, RTX 3060
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors, screenshots or video
+      description: Press F12 → Console and paste any red errors. Drag images or clips in here.

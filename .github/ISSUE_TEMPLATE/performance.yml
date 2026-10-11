@@ -1,0 +1,28 @@
+name: Performance problem
+description: Slow loading, stutter, low frame rate or high memory use.
+labels: ["performance"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What is slow?
+      description: e.g. "drops to 20 FPS when skating into Varrock" or "takes 40 seconds to load".
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where in the world, and which map?
+      placeholder: e.g. Falador park, whole map (gielinor)
+  - type: input
+    id: setup
+    attributes:
+      label: Browser, OS, CPU, graphics card and RAM
+      placeholder: e.g. Edge 140, Windows 11, Ryzen 5 5600, GTX 1660, 16 GB
+    validations:
+      required: true
+  - type: textarea
+    id: numbers
+    attributes:
+      label: Measurements
+      description: Open the game with `?perf=1` and paste or screenshot the overlay (frame time, CPU time, draw calls, triangles, loaded geometry). A Chrome Performance profile is even better.

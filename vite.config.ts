@@ -1,8 +1,11 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 // Development-only, loopback diagnostics from the actual player browser.
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  // public/ holds only the exported game assets (converted Jagex content, gigabytes for the whole world). A build
+  // that loads them from a separate host (VITE_ASSET_BASE, see docs/HOSTING.md) must never copy them into dist/.
+  build: { copyPublicDir: !loadEnv(mode, process.cwd()).VITE_ASSET_BASE },
   // the exported world is tens of thousands of files (gigabytes for the whole of Gielinor): watching it, the
   // exporter's work files or a production build would stall the dev server for minutes
   server:{watch:{ignored:['**/public/world/**','**/public/npcs/**','**/public/player/**','**/public/surfaces/**','**/work/**','**/dist/**','**/vendor/**']}},
@@ -32,4 +35,4 @@ export default defineConfig({
       });
     },
   }],
-});
+}));

@@ -1,6 +1,16 @@
 {
-  "name": "scape-skate",
+  "name": "skate-scape",
   "version": "0.0.1",
+  "description": "Unofficial THPS-meets-skate. fan game in the 2009 RuneScape world, in the browser.",
+  "license": "AGPL-3.0-only",
+  "author": "Umut Alisoglu <umut@alisoglu.com> (https://alisoglu.com)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/UmutAlisoglu/skate-scape.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
   "private": true,
   "type": "module",
   "scripts": {

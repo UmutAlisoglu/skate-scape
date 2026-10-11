@@ -54,6 +54,6 @@ if (missing.length) {
   run('npm run export:surfaces');
 }
 
-console.log('\nStarting Scape Skate. Your browser opens by itself; keep this window open while you play.\n');
+console.log('\nStarting Skate Scape. Your browser opens by itself; keep this window open while you play.\n');
 const server = spawn('npx vite --open --clearScreen false', { stdio: 'inherit', shell: true });
 server.on('exit', (code) => process.exit(code ?? 0));

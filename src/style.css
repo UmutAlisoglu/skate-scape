@@ -144,12 +144,12 @@ button.selected { border-color: #e9cb86; box-shadow: inset 0 0 0 1px #e9cb86; }
 @media(max-width:700px) { #chatbox { display: none; } }
 /* boards in metal tiers */
 .tier-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; margin: 12px 0 4px; }
-.tier-picker button.tier { display: grid; gap: 2px; text-align: left; padding: 7px 9px; border-left: 6px solid var(--metal); background: linear-gradient(90deg, color-mix(in srgb, var(--metal) 26%, #1c3a2f), #17352b); }
-.tier-picker button.tier b { font-size: 12px; color: #f1e5c6; }
-.tier-picker button.tier span { font: 10px system-ui, sans-serif; opacity: 0.85; }
-.tier-picker button.tier i { font: italic 10px system-ui, sans-serif; color: #c9d8b8; }
-.tier-picker button.tier.selected { outline: 2px solid #f1d58e; }
-.tier-picker button.tier.missing { filter: grayscale(0.85) brightness(0.75); }
+.tier-picker button.board-tier { display: grid; gap: 2px; text-align: left; padding: 7px 9px; border-left: 6px solid var(--metal); background: linear-gradient(90deg, color-mix(in srgb, var(--metal) 26%, #1c3a2f), #17352b); }
+.tier-picker button.board-tier b { font-size: 12px; color: #f1e5c6; }
+.tier-picker button.board-tier span { font: 10px system-ui, sans-serif; opacity: 0.85; }
+.tier-picker button.board-tier i { font: italic 10px system-ui, sans-serif; color: #c9d8b8; }
+.tier-picker button.board-tier.selected { outline: 2px solid #f1d58e; }
+.tier-picker button.board-tier.missing { filter: grayscale(0.85) brightness(0.75); }
 /* pets */
 .pet-picker { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
 .pet-picker button.pet { padding: 5px 9px; font-size: 11px; }
