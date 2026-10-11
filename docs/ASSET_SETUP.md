@@ -61,7 +61,7 @@ npm run export:world -- lumbridge
 | Map | Area | Time | Size |
 | --- | --- | --- | --- |
 | `lumbridge` | Lumbridge and its surroundings | ~15 s | ~150 MB |
-| `misthalin` | Lumbridge, Varrock, Draynor, Al Kharid | ~2 min | ~540 MB |
+| `misthalin` | Lumbridge, Varrock, Draynor, Al Kharid | a few minutes | ~540 MB |
 | `gielinor` | the whole mainland (the full game) | 10–20 min | ~3.7 GB |
 
 The whole world needs more memory than Node allows by default. Run this first in the same terminal:
@@ -84,7 +84,7 @@ npm run export:npcs
 npm run export:surfaces
 ```
 
-`export:surfaces` should end with `Rendered 680 textures … 0 failed`. **Run it again whenever you export another map**, because it only packs the textures your exported maps use.
+`export:surfaces` should print `Rendered … textures at 128px, 0 failed`. **Run it again whenever you export another map**, because it only packs the textures your exported maps use.
 
 ## 5. Play
 
